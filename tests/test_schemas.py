@@ -8,16 +8,20 @@ from app.schemas import (
     CrisisRecoveryPlan,
     ErrorDetail,
     EventBudgetBreakdown,
+    EventPhase,
     EventPlanRequest,
     EventType,
     FamilyCouncilCompromise,
     FamilyCouncilResponse,
     LanguageCode,
     MessageTarget,
+    PersonalizedIdea,
     PersonaReview,
+    PlanningMilestone,
     PreMortemRisk,
     RunSheetItem,
     StandardErrorResponse,
+    VendorPlanItem,
     WhatsAppMessageDraft,
 )
 
@@ -393,3 +397,131 @@ def test_standard_error_response_serialization() -> None:
     assert data["error"]["code"] == "VALIDATION_ERROR"
     assert data["error"]["message"] == "Request input validation failed"
     assert isinstance(data["error"]["details"], list)
+
+
+def test_supported_language_codes() -> None:
+    """Verify all 8 supported Indian language codes in EventPlanRequest."""
+    for lang in LanguageCode:
+        req = EventPlanRequest(
+            event_type=EventType.WEDDING,
+            guest_count=100,
+            total_budget_inr=500_000,
+            city_tier=CityTier.METRO,
+            city="Hyderabad",
+            language=lang,
+        )
+        assert req.language == lang
+
+
+def test_family_council_missing_personas_rejected() -> None:
+    """Verify FamilyCouncilResponse fails validation if any of the 4 personas is missing."""
+    p = PersonaReview(
+        persona_name="Reviewer",
+        concerns=["Concern 1"],
+        suggested_changes=["Change 1"],
+    )
+    comp = FamilyCouncilCompromise(agreed_plan="Consensus plan")
+
+    with pytest.raises(ValidationError):
+        FamilyCouncilResponse(  # type: ignore[call-arg]
+            budget_holder=p,
+            elder_relative=p,
+            # missing picky_friend and parent_with_kids
+            compromise=comp,
+        )
+
+
+def test_planning_milestone_validation() -> None:
+    """Verify PlanningMilestone rejects negative weeks_before or empty milestone_name."""
+    milestone = PlanningMilestone(
+        milestone_name="Book Wedding Venue",
+        phase=EventPhase.PLANNING,
+        weeks_before=20,
+        description="Finalize contract and pay booking advance",
+    )
+    assert milestone.weeks_before == 20
+
+    with pytest.raises(ValidationError):
+        PlanningMilestone(
+            milestone_name="",  # Empty title rejected
+            phase=EventPhase.PLANNING,
+            description="Empty milestone",
+        )
+
+    with pytest.raises(ValidationError):
+        PlanningMilestone(
+            milestone_name="Bad Milestone",
+            phase=EventPhase.PLANNING,
+            weeks_before=-5,  # Negative weeks rejected
+            description="Invalid timeline",
+        )
+
+
+def test_vendor_plan_item_validation() -> None:
+    """Verify VendorPlanItem rejects negative lead time or out-of-bounds advance percentage."""
+    item = VendorPlanItem(
+        vendor_type="caterer",
+        lead_time_weeks=12,
+        typical_advance_pct=25.0,
+        allocated_budget_inr=300_000,
+    )
+    assert item.lead_time_weeks == 12
+
+    with pytest.raises(ValidationError):
+        VendorPlanItem(
+            vendor_type="caterer",
+            lead_time_weeks=-1,  # Negative lead time
+            typical_advance_pct=25.0,
+        )
+
+    with pytest.raises(ValidationError):
+        VendorPlanItem(
+            vendor_type="caterer",
+            lead_time_weeks=10,
+            typical_advance_pct=125.0,  # Over 100% advance
+        )
+
+
+def test_personalized_idea_validation() -> None:
+    """Verify PersonalizedIdea rejects negative estimated cost or empty title."""
+    idea = PersonalizedIdea(
+        title="Live Filter Coffee Counter",
+        explanation="Traditional South Indian hospitality experience",
+        implementation_details="Source local artisanal roaster from Chikmagalur",
+        estimated_cost_inr=15_000,
+    )
+    assert idea.estimated_cost_inr == 15_000
+
+    with pytest.raises(ValidationError):
+        PersonalizedIdea(
+            title="",  # Empty title
+            explanation="Invalid",
+            implementation_details="Invalid",
+        )
+
+    with pytest.raises(ValidationError):
+        PersonalizedIdea(
+            title="Invalid Idea",
+            explanation="Invalid",
+            implementation_details="Invalid",
+            estimated_cost_inr=-5_000,  # Negative cost
+        )
+
+
+def test_crisis_recovery_plan_invalid_severity() -> None:
+    """Verify CrisisRecoveryPlan rejects severity < 1 or > 3."""
+    with pytest.raises(ValidationError):
+        CrisisRecoveryPlan(
+            detected_crisis_type="rain",
+            severity=0,  # Below 1
+            explanation="Invalid severity",
+            recommended_actions=["Move indoors"],
+        )
+
+    with pytest.raises(ValidationError):
+        CrisisRecoveryPlan(
+            detected_crisis_type="rain",
+            severity=4,  # Above 3
+            explanation="Invalid severity",
+            recommended_actions=["Move indoors"],
+        )

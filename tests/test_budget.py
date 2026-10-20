@@ -368,3 +368,32 @@ def test_rebalance_reproducibility_and_determinism(
     for _ in range(50):
         res_subsequent = rebalance_budget(baseline_wedding_metro_1m, 750_000)
         assert res_subsequent.model_dump() == res_first.model_dump()
+
+
+def test_validate_budget_categories_mismatched_total_rejected() -> None:
+    """Verify error when total_budget_inr does not equal the sum of 8 categories."""
+    mismatched = {
+        "venue": 260_000,
+        "catering": 300_000,
+        "decor": 110_000,
+        "photo_video": 90_000,
+        "attire_beauty": 100_000,
+        "entertainment": 50_000,
+        "logistics": 30_000,
+        "buffer": 60_000,
+        "total_budget_inr": 1_200_000,  # Sum is 1,000,000
+    }
+    with pytest.raises(BudgetValidationError, match="does not match the stated total budget"):
+        validate_budget_categories(mismatched)
+
+
+@pytest.mark.parametrize("target_budget", [10_000, 25_000, 100_000, 500_000, 850_000, 2_000_000])
+def test_rebalance_never_produces_negative_allocations(
+    baseline_wedding_metro_1m: dict[str, int], target_budget: int
+) -> None:
+    """Verify that rebalancing to any valid budget never produces negative category allocations."""
+    res = rebalance_budget(baseline_wedding_metro_1m, target_budget)
+    alloc = res.allocations.model_dump()
+    for cat in CANONICAL_BUDGET_CATEGORIES:
+        assert alloc[cat] >= 0, f"Category {cat} received negative allocation"
+    assert sum(alloc[c] for c in CANONICAL_BUDGET_CATEGORIES) == target_budget

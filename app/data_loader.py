@@ -60,9 +60,9 @@ class DatasetValidationError(DataLoaderError):
 def _check_file_exists_and_non_empty(path: Path) -> None:
     """Verify that a path exists, is a regular file, and is not 0 bytes."""
     if not path.exists() or not path.is_file():
-        raise DatasetNotFoundError(f"Dataset file not found: {path}")
+        raise DatasetNotFoundError(f"Dataset file not found: {path.name}")
     if path.stat().st_size == 0:
-        raise DatasetEmptyError(f"Dataset file is empty: {path}")
+        raise DatasetEmptyError(f"Dataset file is empty: {path.name}")
 
 
 def load_crisis_scenarios(file_path: Path | str) -> list[CrisisScenario]:
@@ -82,11 +82,13 @@ def load_crisis_scenarios(file_path: Path | str) -> list[CrisisScenario]:
         with open(path, encoding="utf-8", newline="") as f:
             reader = csv.DictReader(f)
             if reader.fieldnames is None:
-                raise DatasetEmptyError(f"No header found in CSV: {path}")
+                raise DatasetEmptyError(f"No header found in CSV: {path.name}")
 
             missing = [c for c in REQUIRED_CRISIS_COLUMNS if c not in reader.fieldnames]
             if missing:
-                raise DatasetMalformedError(f"CSV missing required columns: {missing} in {path}")
+                raise DatasetMalformedError(
+                    f"CSV missing required columns: {missing} in {path.name}"
+                )
 
             for line_no, row in enumerate(reader, start=2):
                 if not any(row.values()):
@@ -98,10 +100,10 @@ def load_crisis_scenarios(file_path: Path | str) -> list[CrisisScenario]:
                         f"Validation error at line {line_no} in {path.name}: {err}"
                     ) from err
     except (csv.Error, UnicodeDecodeError) as err:
-        raise DatasetMalformedError(f"Malformed CSV content in {path}: {err}") from err
+        raise DatasetMalformedError(f"Malformed CSV content in {path.name}: {err}") from err
 
     if not scenarios:
-        raise DatasetEmptyError(f"CSV contains 0 scenario records: {path}")
+        raise DatasetEmptyError(f"CSV contains 0 scenario records: {path.name}")
 
     logger.info("Loaded and validated %d crisis scenarios from %s", len(scenarios), path.name)
     return scenarios
@@ -115,12 +117,14 @@ def load_budget_splits(file_path: Path | str) -> BudgetSplitsDataset:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as err:
-        raise DatasetMalformedError(f"Invalid JSON in {path}: {err}") from err
+        raise DatasetMalformedError(f"Invalid JSON in {path.name}: {err}") from err
 
     try:
         dataset = BudgetSplitsDataset.model_validate(data)
     except (ValidationError, ValueError) as err:
-        raise DatasetValidationError(f"Budget splits validation failed in {path}: {err}") from err
+        raise DatasetValidationError(
+            f"Budget splits validation failed in {path.name}: {err}"
+        ) from err
 
     return dataset
 
@@ -133,13 +137,13 @@ def load_vendor_checklists(file_path: Path | str) -> VendorChecklistsDataset:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as err:
-        raise DatasetMalformedError(f"Invalid JSON in {path}: {err}") from err
+        raise DatasetMalformedError(f"Invalid JSON in {path.name}: {err}") from err
 
     try:
         dataset = VendorChecklistsDataset.model_validate(data)
     except (ValidationError, ValueError) as err:
         raise DatasetValidationError(
-            f"Vendor checklists validation failed in {path}: {err}"
+            f"Vendor checklists validation failed in {path.name}: {err}"
         ) from err
 
     return dataset

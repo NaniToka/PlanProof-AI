@@ -1,6 +1,7 @@
 """FastAPI application entrypoint for PlanProof AI."""
 
 import logging
+import re
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -12,7 +13,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.config import Settings, get_settings
+from app.config import ConfigurationError, Settings, get_settings
 from app.data_loader import DataLoaderError, DatasetRepository
 from app.schemas import (
     BudgetCalculateRequest,
@@ -63,6 +64,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         description="AI-powered event planning and crisis recovery assistant.",
         lifespan=lifespan,
     )
+    app.state.settings = app_settings
+    if settings is not None:
+        app.dependency_overrides[get_settings] = lambda: app_settings
 
     cors_origins = (
         app_settings.allowed_cors_origins
@@ -78,6 +82,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_headers=["*"],
     )
 
+    def sanitize_error_message(message: str) -> str:
+        """Sanitize error messages to ensure absolute paths or secrets are never exposed."""
+        # Strip absolute Unix or Windows file paths, leaving only filename
+        cleaned = re.sub(r"(/[a-zA-Z0-9_\.\-]+)+/([a-zA-Z0-9_\.\-]+)", r"\2", message)
+        return re.sub(r"([a-zA-Z]:\\[a-zA-Z0-9_\.\-\\]+)\\([a-zA-Z0-9_\.\-]+)", r"\2", cleaned)
+
     # --------------------------------------------------------------------------
     # Exception Handlers (Standard Error Format)
     # --------------------------------------------------------------------------
@@ -90,7 +100,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         formatted_details = [
             {
                 "loc": [str(x) for x in err.get("loc", [])],
-                "msg": err.get("msg", ""),
+                "msg": sanitize_error_message(err.get("msg", "")),
                 "type": err.get("type", ""),
             }
             for err in exc.errors()
@@ -116,7 +126,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             content={
                 "error": {
                     "code": "HTTP_ERROR",
-                    "message": str(exc.detail),
+                    "message": sanitize_error_message(str(exc.detail)),
                     "details": None,
                 }
             },
@@ -126,13 +136,33 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def data_loader_exception_handler(
         _request: Request, exc: DataLoaderError
     ) -> JSONResponse:
-        """Handle data loader exceptions without leaking internal stack traces."""
+        """Handle data loader exceptions without leaking internal stack traces or paths."""
+        logger.error("Dataset loader error encountered: %s", exc, exc_info=True)
+        safe_msg = sanitize_error_message(str(exc))
         return JSONResponse(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             content={
                 "error": {
                     "code": "DATASET_ERROR",
-                    "message": f"Dataset service error: {exc}",
+                    "message": f"Dataset service error: {safe_msg}",
+                    "details": None,
+                }
+            },
+        )
+
+    @app.exception_handler(ConfigurationError)
+    async def configuration_exception_handler(
+        _request: Request, exc: ConfigurationError
+    ) -> JSONResponse:
+        """Handle configuration errors without exposing sensitive environment details."""
+        logger.error("Configuration error encountered: %s", exc, exc_info=True)
+        safe_msg = sanitize_error_message(str(exc))
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={
+                "error": {
+                    "code": "CONFIGURATION_ERROR",
+                    "message": f"Configuration error: {safe_msg}",
                     "details": None,
                 }
             },
@@ -143,12 +173,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         _request: Request, exc: BudgetEngineError
     ) -> JSONResponse:
         """Handle budget engine domain errors without leaking internal stack traces."""
+        safe_msg = sanitize_error_message(str(exc))
         return JSONResponse(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             content={
                 "error": {
                     "code": "BUDGET_CALCULATION_ERROR",
-                    "message": str(exc),
+                    "message": safe_msg,
                     "details": None,
                 }
             },
@@ -175,14 +206,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/health", response_model=HealthResponse, tags=["System"])
     async def health(
+        request: Request,
         current_settings: Settings = Depends(get_settings),
     ) -> HealthResponse:
         """Health check endpoint confirming service status."""
+        active_settings = getattr(request.app.state, "settings", current_settings)
         return HealthResponse(
             status="ok",
-            app=current_settings.app_name,
-            version=current_settings.version,
-            environment=current_settings.environment,
+            app=active_settings.app_name,
+            version=active_settings.version,
+            environment=active_settings.environment,
         )
 
     @app.get(

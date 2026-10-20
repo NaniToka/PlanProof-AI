@@ -10,6 +10,10 @@ from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+class ConfigurationError(Exception):
+    """Raised when an application setting or feature configuration is invalid or missing."""
+
+
 class Settings(BaseSettings):
     """Application settings loaded from environment variables and optional .env file."""
 

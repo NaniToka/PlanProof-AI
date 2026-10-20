@@ -342,3 +342,48 @@ def test_api_rebalance_budget_validation_errors(client: TestClient) -> None:
         json={"current_allocations": valid_alloc, "new_total_budget_inr": 5_000},
     )
     assert res3.status_code == 422
+
+
+def test_api_malformed_json_request(client: TestClient) -> None:
+    """Verify that malformed JSON request body returns 422 with StandardErrorResponse."""
+    res = client.post(
+        "/api/v1/budget/calculate",
+        content=b'{"event_type": "wedding", malformed_json',
+        headers={"Content-Type": "application/json"},
+    )
+    assert res.status_code == 422
+    data = res.json()
+    assert "error" in data
+    assert data["error"]["code"] == "VALIDATION_ERROR"
+    assert "Traceback" not in res.text
+
+
+def test_api_method_not_allowed(client: TestClient) -> None:
+    """Verify that unsupported HTTP methods return 405 with StandardErrorResponse."""
+    res = client.put("/health")
+    assert res.status_code == 405
+    data = res.json()
+    assert "error" in data
+    assert data["error"]["code"] == "HTTP_ERROR"
+    assert "Method Not Allowed" in data["error"]["message"]
+
+
+def test_api_unhandled_internal_error() -> None:
+    """Verify unhandled server errors return safe 500 JSON without leaking stack traces."""
+    app = create_app()
+
+    @app.get("/trigger-crash")
+    async def crash_endpoint() -> None:
+        raise RuntimeError("Database connection suddenly dropped with internal details")
+
+    with TestClient(app, raise_server_exceptions=False) as test_client:
+        res = test_client.get("/trigger-crash")
+        assert res.status_code == 500
+        data = res.json()
+        assert "error" in data
+        assert data["error"]["code"] == "INTERNAL_ERROR"
+        assert data["error"]["message"] == "An internal server error occurred."
+        assert data["error"]["details"] is None
+        assert "RuntimeError" not in res.text
+        assert "Database connection" not in res.text
+        assert "Traceback" not in res.text

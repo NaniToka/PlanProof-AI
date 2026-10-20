@@ -101,6 +101,15 @@ def validate_budget_categories(allocations: Mapping[str, Any]) -> dict[str, int]
             )
         validated[cat] = val_int
 
+    if "total_budget_inr" in allocations:
+        stated = allocations["total_budget_inr"]
+        cat_sum = sum(validated.values())
+        if stated != cat_sum:
+            raise BudgetValidationError(
+                f"Budget category allocations sum to ₹{cat_sum:,}, which does not match "
+                f"the stated total budget of ₹{stated:,}"
+            )
+
     return validated
 
 
