@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: planproof-ai
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: ENVIRONMENT
+        value: production
+      - key: CRISIS_DATASET_PATH
+        value: data/crisis_scenarios.csv
+      - key: BUDGET_SPLITS_PATH
+        value: data/budget_splits.json
+      - key: VENDOR_CHECKLISTS_PATH
+        value: data/vendor_checklists.json
+      - key: GEMINI_API_KEY
+        sync: false

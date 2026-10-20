@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PlanProof AI - Event Planning & Crisis Recovery Assistant</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="bg-glow"></div>
+
+  <main class="container">
+    <header class="hero">
+      <div class="badge-pill">
+        <span class="status-dot pulsating"></span>
+        <span id="system-badge-text">Milestone 1 · Foundation & Discovery</span>
+      </div>
+      <h1 class="hero-title">PlanProof <span class="gradient-text">AI</span></h1>
+      <p class="hero-subtitle">
+        AI-powered event planning, pre-mortem risk evaluation, and real-time crisis recovery assistant.
+      </p>
+    </header>
+
+    <section class="card-grid">
+      <!-- Health Card -->
+      <article class="glass-card" id="health-card">
+        <div class="card-header">
+          <div class="icon-wrap">⚡</div>
+          <div>
+            <h2>Service Health</h2>
+            <p class="sub-text">API & Runtime Status</p>
+          </div>
+        </div>
+        <div class="status-indicator">
+          <span class="pill pill-success" id="health-status">Checking...</span>
+        </div>
+        <div class="metric-row">
+          <span class="metric-label">Environment:</span>
+          <span class="metric-val" id="env-val">—</span>
+        </div>
+        <div class="metric-row">
+          <span class="metric-label">Version:</span>
+          <span class="metric-val" id="ver-val">—</span>
+        </div>
+      </article>
+
+      <!-- Dataset Card -->
+      <article class="glass-card" id="dataset-card">
+        <div class="card-header">
+          <div class="icon-wrap">📊</div>
+          <div>
+            <h2>Crisis Repository</h2>
+            <p class="sub-text">Preloaded Recovery Scenarios</p>
+          </div>
+        </div>
+        <div class="status-indicator">
+          <span class="pill pill-success" id="dataset-status">Checking...</span>
+        </div>
+        <div class="metric-row">
+          <span class="metric-label">Scenarios Loaded:</span>
+          <span class="metric-val font-mono" id="scenarios-count">—</span>
+        </div>
+        <div class="metric-row">
+          <span class="metric-label">Severity Range:</span>
+          <span class="metric-val font-mono" id="severity-range">—</span>
+        </div>
+        <div class="metric-row">
+          <span class="metric-label">Budget Splits:</span>
+          <span class="metric-val" id="budget-status">—</span>
+        </div>
+        <div class="metric-row">
+          <span class="metric-label">Vendor Catalogs:</span>
+          <span class="metric-val" id="vendor-status">—</span>
+        </div>
+      </article>
+    </section>
+
+    <!-- Crisis Categories Overview -->
+    <section class="glass-card categories-card">
+      <div class="card-header">
+        <div class="icon-wrap">🛡️</div>
+        <div>
+          <h2>Available Crisis Scenarios</h2>
+          <p class="sub-text">Validated incident types ready for recovery playbooks</p>
+        </div>
+      </div>
+      <div class="tag-cloud" id="crisis-types-cloud">
+        <span class="tag-skeleton">Loading taxonomy...</span>
+      </div>
+    </section>
+
+    <footer class="footer">
+      <div class="actions">
+        <button id="btn-refresh" class="btn-primary" type="button">
+          Refresh Status
+        </button>
+        <a href="/docs" class="btn-secondary" target="_blank" rel="noopener">
+          API Documentation (Swagger)
+        </a>
+      </div>
+      <p class="footer-note">PlanProof AI · Hackathon Foundation · Python 3.11+ & FastAPI</p>
+    </footer>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

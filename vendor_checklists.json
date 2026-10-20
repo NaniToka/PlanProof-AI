@@ -1,0 +1,85 @@
+{
+  "_note": "Lead times and advance percent are synthetic assumptions",
+  "vendors": [
+    {
+      "type": "venue",
+      "lead_time_weeks": 26,
+      "typical_advance_pct": 30,
+      "ask_before_booking": [
+        "Capacity and indoor backup?",
+        "Power backup?",
+        "Cancellation terms?"
+      ]
+    },
+    {
+      "type": "caterer",
+      "lead_time_weeks": 12,
+      "typical_advance_pct": 25,
+      "ask_before_booking": [
+        "Menu tasting?",
+        "Headcount change deadline?",
+        "Backup staff?"
+      ]
+    },
+    {
+      "type": "decorator",
+      "lead_time_weeks": 8,
+      "typical_advance_pct": 40,
+      "ask_before_booking": [
+        "Setup time needed?",
+        "Teardown included?",
+        "Weather plan?"
+      ]
+    },
+    {
+      "type": "photographer",
+      "lead_time_weeks": 16,
+      "typical_advance_pct": 30,
+      "ask_before_booking": [
+        "Backup photographer?",
+        "Delivery timeline?",
+        "Overtime rate?"
+      ]
+    },
+    {
+      "type": "music_dj",
+      "lead_time_weeks": 8,
+      "typical_advance_pct": 30,
+      "ask_before_booking": [
+        "Own sound system?",
+        "Backup equipment?",
+        "Playlist control?"
+      ]
+    },
+    {
+      "type": "makeup_attire",
+      "lead_time_weeks": 10,
+      "typical_advance_pct": 25,
+      "ask_before_booking": [
+        "Trial session?",
+        "Travel charges?",
+        "Touch-up on day?"
+      ]
+    },
+    {
+      "type": "transport",
+      "lead_time_weeks": 4,
+      "typical_advance_pct": 20,
+      "ask_before_booking": [
+        "Number of vehicles?",
+        "Driver contact?",
+        "Fuel and waiting charges?"
+      ]
+    },
+    {
+      "type": "invitations",
+      "lead_time_weeks": 6,
+      "typical_advance_pct": 50,
+      "ask_before_booking": [
+        "Print or digital?",
+        "Proof approval?",
+        "Delivery date?"
+      ]
+    }
+  ]
+}

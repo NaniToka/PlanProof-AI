@@ -1,0 +1,101 @@
+{
+  "_note": "Synthetic assumptions, percent of total budget",
+  "splits": {
+    "wedding": {
+      "metro": {
+        "venue": 26,
+        "catering": 30,
+        "decor": 11,
+        "photo_video": 9,
+        "attire_beauty": 10,
+        "entertainment": 5,
+        "logistics": 3,
+        "buffer": 6
+      },
+      "tier2": {
+        "venue": 22,
+        "catering": 32,
+        "decor": 12,
+        "photo_video": 9,
+        "attire_beauty": 10,
+        "entertainment": 5,
+        "logistics": 4,
+        "buffer": 6
+      },
+      "tier3": {
+        "venue": 18,
+        "catering": 34,
+        "decor": 13,
+        "photo_video": 9,
+        "attire_beauty": 10,
+        "entertainment": 5,
+        "logistics": 5,
+        "buffer": 6
+      }
+    },
+    "birthday": {
+      "metro": {
+        "venue": 22,
+        "catering": 33,
+        "decor": 14,
+        "photo_video": 6,
+        "attire_beauty": 3,
+        "entertainment": 13,
+        "logistics": 3,
+        "buffer": 6
+      },
+      "tier2": {
+        "venue": 18,
+        "catering": 35,
+        "decor": 15,
+        "photo_video": 6,
+        "attire_beauty": 3,
+        "entertainment": 13,
+        "logistics": 4,
+        "buffer": 6
+      },
+      "tier3": {
+        "venue": 14,
+        "catering": 37,
+        "decor": 16,
+        "photo_video": 6,
+        "attire_beauty": 3,
+        "entertainment": 13,
+        "logistics": 5,
+        "buffer": 6
+      }
+    },
+    "community_event": {
+      "metro": {
+        "venue": 24,
+        "catering": 26,
+        "decor": 7,
+        "photo_video": 4,
+        "attire_beauty": 0,
+        "entertainment": 15,
+        "logistics": 14,
+        "buffer": 10
+      },
+      "tier2": {
+        "venue": 20,
+        "catering": 28,
+        "decor": 8,
+        "photo_video": 4,
+        "attire_beauty": 0,
+        "entertainment": 15,
+        "logistics": 15,
+        "buffer": 10
+      },
+      "tier3": {
+        "venue": 16,
+        "catering": 30,
+        "decor": 9,
+        "photo_video": 4,
+        "attire_beauty": 0,
+        "entertainment": 15,
+        "logistics": 16,
+        "buffer": 10
+      }
+    }
+  }
+}
