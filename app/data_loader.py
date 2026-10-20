@@ -1,14 +1,23 @@
-"""Safe data loading and validation for PlanProof AI datasets."""
+"""Safe data loading and strict validation for PlanProof AI datasets."""
 
 import csv
 import json
 import logging
 from pathlib import Path
-from typing import Any
 
 from pydantic import ValidationError
 
-from app.schemas import CrisisScenario, DataStatusResponse, SeverityRange
+from app.schemas import (
+    BudgetSplitCategories,
+    BudgetSplitsDataset,
+    BudgetSummary,
+    CrisisScenario,
+    CrisisSummary,
+    DataStatusResponse,
+    SeverityRange,
+    VendorChecklistsDataset,
+    VendorSummary,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -26,17 +35,6 @@ REQUIRED_CRISIS_COLUMNS = (
     "message_target",
     "synthetic",
 )
-
-EXPECTED_BUDGET_CATEGORIES = {
-    "venue",
-    "catering",
-    "decor",
-    "photo_video",
-    "attire_beauty",
-    "entertainment",
-    "logistics",
-    "buffer",
-}
 
 
 class DataLoaderError(Exception):
@@ -60,7 +58,7 @@ class DatasetValidationError(DataLoaderError):
 
 
 def _check_file_exists_and_non_empty(path: Path) -> None:
-    """Verify that a path exists, is a file, and is not empty."""
+    """Verify that a path exists, is a regular file, and is not 0 bytes."""
     if not path.exists() or not path.is_file():
         raise DatasetNotFoundError(f"Dataset file not found: {path}")
     if path.stat().st_size == 0:
@@ -105,11 +103,11 @@ def load_crisis_scenarios(file_path: Path | str) -> list[CrisisScenario]:
     if not scenarios:
         raise DatasetEmptyError(f"CSV contains 0 scenario records: {path}")
 
-    logger.info("Loaded %d crisis scenarios from %s", len(scenarios), path.name)
+    logger.info("Loaded and validated %d crisis scenarios from %s", len(scenarios), path.name)
     return scenarios
 
 
-def load_budget_splits(file_path: Path | str) -> dict[str, Any]:
+def load_budget_splits(file_path: Path | str) -> BudgetSplitsDataset:
     """Load and validate budget category percentage allocations from JSON."""
     path = Path(file_path)
     _check_file_exists_and_non_empty(path)
@@ -119,30 +117,15 @@ def load_budget_splits(file_path: Path | str) -> dict[str, Any]:
     except json.JSONDecodeError as err:
         raise DatasetMalformedError(f"Invalid JSON in {path}: {err}") from err
 
-    splits = data.get("splits")
-    if not isinstance(splits, dict) or not splits:
-        raise DatasetMalformedError(f"Missing 'splits' mapping in {path}")
+    try:
+        dataset = BudgetSplitsDataset.model_validate(data)
+    except (ValidationError, ValueError) as err:
+        raise DatasetValidationError(f"Budget splits validation failed in {path}: {err}") from err
 
-    for event_type, tiers in splits.items():
-        if not isinstance(tiers, dict):
-            raise DatasetMalformedError(f"Invalid tier dict for event '{event_type}'")
-        for tier_name, categories in tiers.items():
-            if not isinstance(categories, dict):
-                raise DatasetMalformedError(f"Invalid category split in {event_type}.{tier_name}")
-            cats = set(categories.keys())
-            if cats != EXPECTED_BUDGET_CATEGORIES:
-                raise DatasetValidationError(
-                    f"Unexpected categories for {event_type}.{tier_name}: {cats}"
-                )
-            total = sum(categories.values())
-            if total != 100:
-                msg = f"Budget split is {total}% (must be 100%) in {event_type}.{tier_name}"
-                raise DatasetValidationError(msg)
-
-    return data
+    return dataset
 
 
-def load_vendor_checklists(file_path: Path | str) -> dict[str, Any]:
+def load_vendor_checklists(file_path: Path | str) -> VendorChecklistsDataset:
     """Load and validate vendor checklists from JSON."""
     path = Path(file_path)
     _check_file_exists_and_non_empty(path)
@@ -152,16 +135,14 @@ def load_vendor_checklists(file_path: Path | str) -> dict[str, Any]:
     except json.JSONDecodeError as err:
         raise DatasetMalformedError(f"Invalid JSON in {path}: {err}") from err
 
-    vendors = data.get("vendors")
-    if not isinstance(vendors, list) or not vendors:
-        raise DatasetMalformedError(f"Missing or empty 'vendors' list in {path}")
+    try:
+        dataset = VendorChecklistsDataset.model_validate(data)
+    except (ValidationError, ValueError) as err:
+        raise DatasetValidationError(
+            f"Vendor checklists validation failed in {path}: {err}"
+        ) from err
 
-    required_fields = {"type", "lead_time_weeks", "typical_advance_pct", "ask_before_booking"}
-    for idx, vendor in enumerate(vendors):
-        if not isinstance(vendor, dict) or not required_fields.issubset(vendor.keys()):
-            raise DatasetValidationError(f"Vendor record at index {idx} missing required fields")
-
-    return data
+    return dataset
 
 
 class DatasetRepository:
@@ -169,13 +150,13 @@ class DatasetRepository:
 
     def __init__(self) -> None:
         self.scenarios: list[CrisisScenario] = []
-        self.budget_splits: dict[str, Any] = {}
-        self.vendor_checklists: dict[str, Any] = {}
+        self.budget_splits: BudgetSplitsDataset | None = None
+        self.vendor_checklists: VendorChecklistsDataset | None = None
         self.load_error: str | None = None
 
     @property
     def is_loaded(self) -> bool:
-        """Return True if crisis dataset was successfully loaded."""
+        """Return True if crisis dataset was successfully loaded without error."""
         return len(self.scenarios) > 0 and self.load_error is None
 
     def load_all(
@@ -184,7 +165,7 @@ class DatasetRepository:
         budget_path: Path | str,
         vendor_path: Path | str,
     ) -> None:
-        """Load and validate all application datasets, recording errors safely."""
+        """Load and strictly validate all application datasets."""
         self.load_error = None
         try:
             self.scenarios = load_crisis_scenarios(crisis_path)
@@ -195,29 +176,51 @@ class DatasetRepository:
             logger.error("Dataset loading failed: %s", err)
 
     def get_status_summary(self) -> DataStatusResponse:
-        """Produce safe metadata summary without exposing full dataset."""
-        if not self.is_loaded:
-            return DataStatusResponse(
-                status="error" if self.load_error else "degraded",
-                dataset_loaded=False,
-                row_count=0,
-                available_crisis_types=[],
-                available_event_types=[],
-                available_city_tiers=[],
-                severity_range=SeverityRange(min=0, max=0),
-                budget_splits_loaded=bool(self.budget_splits),
-                vendor_checklists_loaded=bool(self.vendor_checklists),
-            )
+        """Produce safe metadata summary for API status endpoint."""
+        severities = [s.severity for s in self.scenarios] if self.scenarios else [0]
+        sev_min, sev_max = (min(severities), max(severities)) if self.scenarios else (0, 0)
 
-        severities = [s.severity for s in self.scenarios]
-        return DataStatusResponse(
-            status="healthy",
-            dataset_loaded=True,
+        crisis_sum = CrisisSummary(
+            loaded=len(self.scenarios) > 0,
             row_count=len(self.scenarios),
             available_crisis_types=sorted({s.crisis_type for s in self.scenarios}),
-            available_event_types=sorted({s.event_type for s in self.scenarios}),
-            available_city_tiers=sorted({s.city_tier for s in self.scenarios}),
-            severity_range=SeverityRange(min=min(severities), max=max(severities)),
-            budget_splits_loaded=bool(self.budget_splits),
-            vendor_checklists_loaded=bool(self.vendor_checklists),
+            available_event_types=sorted({s.event_type.value for s in self.scenarios}),
+            available_city_tiers=sorted({s.city_tier.value for s in self.scenarios}),
+            severity_range=SeverityRange(min=sev_min, max=sev_max),
+        )
+
+        b_types = [e.value for e in self.budget_splits.splits] if self.budget_splits else []
+        b_tiers = (
+            [t.value for t in next(iter(self.budget_splits.splits.values()))]
+            if self.budget_splits and self.budget_splits.splits
+            else []
+        )
+        b_cats = list(BudgetSplitCategories.model_fields.keys()) if self.budget_splits else []
+        budget_sum = BudgetSummary(
+            loaded=self.budget_splits is not None,
+            event_types=b_types,
+            city_tiers=b_tiers,
+            categories=b_cats,
+        )
+
+        v_vendors = self.vendor_checklists.vendors if self.vendor_checklists else []
+        vendor_sum = VendorSummary(
+            loaded=self.vendor_checklists is not None,
+            vendor_count=len(v_vendors),
+            vendor_types=[v.type for v in v_vendors],
+        )
+
+        return DataStatusResponse(
+            status="healthy" if self.is_loaded else ("error" if self.load_error else "degraded"),
+            dataset_loaded=self.is_loaded,
+            crisis_scenarios=crisis_sum,
+            budget_splits=budget_sum,
+            vendor_checklists=vendor_sum,
+            row_count=crisis_sum.row_count,
+            available_crisis_types=crisis_sum.available_crisis_types,
+            available_event_types=crisis_sum.available_event_types,
+            available_city_tiers=crisis_sum.available_city_tiers,
+            severity_range=crisis_sum.severity_range,
+            budget_splits_loaded=budget_sum.loaded,
+            vendor_checklists_loaded=vendor_sum.loaded,
         )

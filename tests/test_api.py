@@ -35,6 +35,27 @@ def test_data_status_endpoint_success(client: TestClient) -> None:
     assert data["budget_splits_loaded"] is True
     assert data["vendor_checklists_loaded"] is True
 
+    # Assert new nested structured metadata
+    crisis_meta = data["crisis_scenarios"]
+    assert crisis_meta["loaded"] is True
+    assert crisis_meta["row_count"] == 5000
+    assert set(crisis_meta["available_event_types"]) == {
+        "wedding",
+        "birthday",
+        "community_event",
+    }
+
+    budget_meta = data["budget_splits"]
+    assert budget_meta["loaded"] is True
+    assert set(budget_meta["event_types"]) == {"wedding", "birthday", "community_event"}
+    assert set(budget_meta["city_tiers"]) == {"metro", "tier2", "tier3"}
+    assert len(budget_meta["categories"]) == 8
+
+    vendor_meta = data["vendor_checklists"]
+    assert vendor_meta["loaded"] is True
+    assert vendor_meta["vendor_count"] >= 8
+    assert "venue" in vendor_meta["vendor_types"]
+
 
 def test_data_status_failure_handles_gracefully(tmp_path: Path) -> None:
     """Verify that missing dataset returns 503 JSON without unhandled stack traces."""

@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from app.data_loader import REQUIRED_CRISIS_COLUMNS
 from app.main import create_app
+from data.generate_dataset import generate_budget_splits_data, generate_vendor_checklists_data
 
 
 @pytest.fixture
@@ -44,26 +45,10 @@ def valid_csv_file(tmp_path: Path, sample_crisis_row: dict[str, str]) -> Path:
 
 @pytest.fixture
 def valid_budget_json_file(tmp_path: Path) -> Path:
-    """Create a temporary valid budget splits JSON file."""
+    """Create a temporary valid budget splits JSON file with all combinations."""
     json_path = tmp_path / "budget_splits.json"
-    data = {
-        "_note": "Synthetic test assumptions",
-        "splits": {
-            "wedding": {
-                "metro": {
-                    "venue": 26,
-                    "catering": 30,
-                    "decor": 11,
-                    "photo_video": 9,
-                    "attire_beauty": 10,
-                    "entertainment": 5,
-                    "logistics": 3,
-                    "buffer": 6,
-                }
-            }
-        },
-    }
-    json_path.write_text(json.dumps(data), encoding="utf-8")
+    data = generate_budget_splits_data()
+    json_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
     return json_path
 
 
@@ -71,18 +56,8 @@ def valid_budget_json_file(tmp_path: Path) -> Path:
 def valid_vendor_json_file(tmp_path: Path) -> Path:
     """Create a temporary valid vendor checklists JSON file."""
     json_path = tmp_path / "vendor_checklists.json"
-    data = {
-        "_note": "Synthetic test assumptions",
-        "vendors": [
-            {
-                "type": "venue",
-                "lead_time_weeks": 26,
-                "typical_advance_pct": 30,
-                "ask_before_booking": ["Indoor backup?"],
-            }
-        ],
-    }
-    json_path.write_text(json.dumps(data), encoding="utf-8")
+    data = generate_vendor_checklists_data()
+    json_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
     return json_path
 
 

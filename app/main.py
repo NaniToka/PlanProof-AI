@@ -97,19 +97,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         repo: DatasetRepository | None = getattr(request.app.state, "dataset_repo", None)
         if repo is None or not repo.is_loaded:
             summary = (
-                repo.get_status_summary()
-                if repo
-                else DataStatusResponse(
-                    status="error",
-                    dataset_loaded=False,
-                    row_count=0,
-                    available_crisis_types=[],
-                    available_event_types=[],
-                    available_city_tiers=[],
-                    severity_range={"min": 0, "max": 0},
-                    budget_splits_loaded=False,
-                    vendor_checklists_loaded=False,
-                )
+                repo.get_status_summary() if repo else DatasetRepository().get_status_summary()
             )
             return JSONResponse(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

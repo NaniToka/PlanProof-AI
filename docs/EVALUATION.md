@@ -1,66 +1,87 @@
-# PlanProof AI — Dataset Audit & Evaluation Framework
+# PlanProof AI — Dataset Engineering & Strict Validation (Milestone 2)
 
-## 1. Dataset Audit Findings
+## 1. Dataset Audit Findings & Edge Cases
 
-An exhaustive audit of the existing workspace was conducted prior to code implementation.
+An exhaustive audit of the dataset and domain rules was conducted during Milestone 2.
 
 ### A. Discovery and File Mapping
 - **Discovered CSV:** Located at `dataset.csv` in the project root.
 - **Expected CSV Name:** `data/crisis_scenarios.csv`.
-- **Preservation Action:** `dataset.csv` was preserved intact in the project root. A verified byte-for-byte copy was placed at `data/crisis_scenarios.csv`.
+- **Preservation Action:** `dataset.csv` remains preserved in the project root. `data/crisis_scenarios.csv` is maintained as a verified identical copy.
 - **SHA-256 Checksum:** `855603b2e04839e0fbff8a7343dcbc869cae5bf2cbf8d3948beda05e0921df03`.
 
-### B. Schema Verification
-The actual columns of the discovered dataset were verified against the target schema:
+### B. Schema Verification & Critical Finding
+The 5,000 crisis records were verified against strict domain schemas:
 
-| Column | Actual Type | Missing Values | Expected Schema Match |
-| :--- | :--- | :---: | :---: |
-| `id` | `str` (e.g. `CR0000001`) | 0 | Yes |
-| `event_type` | `str` (`wedding`, `birthday`, `community_event`) | 0 | Yes |
-| `city_tier` | `str` (`metro`, `tier2`, `tier3`) | 0 | Yes |
-| `guest_count` | `int` (Range: 20 – 600) | 0 | Yes |
-| `phase` | `str` (`planning`, `day_before`, `event_day`) | 0 | Yes |
-| `crisis_type` | `str` (12 unique crisis types) | 0 | Yes |
-| `severity` | `int` (1, 2, 3) | 0 | Yes |
-| `description` | `str` (Non-empty) | 0 | Yes |
-| `recommended_fix` | `str` (Non-empty) | 0 | Yes |
-| `cost_impact_pct_of_budget` | `float` (Range: -6.5% – 22.7%) | 0 | Yes |
-| `message_target` | `str` (`family`, `vendor`, `guests`) | 0 | Yes |
-| `synthetic` | `bool` (`True`) | 0 | Yes |
+| Column | Strict Type | Missing Values | Validation Constraints |
+| :--- | :--- | :---: | :--- |
+| `id` | `str` | 0 | Non-empty string (e.g. `CR0000001`) |
+| `event_type` | `EventType` Enum | 0 | `wedding`, `birthday`, `community_event` |
+| `city_tier` | `CityTier` Enum | 0 | `metro`, `tier2`, `tier3` |
+| `guest_count` | `int` | 0 | Positive integer within supported range ($1 \le g \le 2000$) |
+| `phase` | `EventPhase` Enum | 0 | `planning`, `day_before`, `event_day` |
+| `crisis_type` | `str` | 0 | 12 standardized crisis incident types |
+| `severity` | `int` | 0 | Integer strictly in $\{1, 2, 3\}$ |
+| `description` | `str` | 0 | Non-empty, non-blank text |
+| `recommended_fix` | `str` | 0 | Non-empty, actionable text |
+| `cost_impact_pct_of_budget` | `float` | 0 | Finite float (rejects `NaN`, `inf`). Non-negative for cost additions; negative values permitted **only** for headcount savings (`guest_dropout`) |
+| `message_target` | `MessageTarget` Enum | 0 | `vendor`, `guests`, `family` |
+| `synthetic` | `bool` | 0 | `True` (synthetic assumptions) |
 
-- **Total Records:** 5,000 valid data rows (5,001 lines with header).
-- **Duplicate IDs:** 0 duplicate identifiers.
-- **Missing Values:** 0 across all columns.
-
-### C. Ancillary Datasets Audit
-- `budget_splits.json`: Validated against 8 required budget categories (`venue`, `catering`, `decor`, `photo_video`, `attire_beauty`, `entertainment`, `logistics`, `buffer`). All 9 combinations of `(event_type, city_tier)` total **exactly 100%**.
-- `vendor_checklists.json`: Validated across 8 core vendor categories with lead times, advance payment percentages, and interview questions.
+> [!NOTE]
+> **Negative Cost Impact Transparency:**
+> In the 5,000-row dataset, exactly 420 records have negative cost impact ($-6.5\%$ to $-0.8\%$). These exclusively correspond to `crisis_type == "guest_dropout"`, where guest cancellations enable catering headcount renegotiations that reduce costs. The schema validator enforces that negative cost impacts are rejected for any crisis other than `guest_dropout`.
 
 ---
 
-## 2. Synthetic Data Transparency
+## 2. Supporting Datasets & Validation Rules
 
-All numbers in `crisis_scenarios.csv`, `budget_splits.json`, and `vendor_checklists.json` are **explicitly labeled as synthetic assumptions** generated for testing and demonstration. They do not constitute surveyed market data or contractual pricing.
+### A. Budget Allocation Allocations (`data/budget_splits.json`)
+- Evaluated with `BudgetSplitsDataset` and `BudgetSplitCategories`.
+- Enforces presence of all 3 event types (`wedding`, `birthday`, `community_event`) and all 3 city tiers (`metro`, `tier2`, `tier3`).
+- Enforces exactly the 8 standard categories (`venue`, `catering`, `decor`, `photo_video`, `attire_beauty`, `entertainment`, `logistics`, `buffer`).
+- Disallows missing or extra categories (`extra="forbid"`).
+- Rejects allocations where category percentages do not sum to $100.0\%$ (allowing $0.01\%$ float tolerance).
+
+### B. Vendor Booking Checklists (`data/vendor_checklists.json`)
+- Evaluated with `VendorChecklistsDataset` and `VendorChecklist`.
+- Requires `lead_time_weeks >= 0` integer.
+- Requires `typical_advance_pct` finite float in $[0.0, 100.0]$.
+- Requires non-empty list of non-empty interview questions.
+- Enforces **case-insensitive uniqueness** across vendor category types.
+
+### C. Safe Generator Tooling (`data/generate_dataset.py`)
+- Never touches, overwrites, or regenerates `crisis_scenarios.csv` or `dataset.csv`.
+- Preserves existing supporting JSON files unless `--overwrite` is explicitly specified.
+- Provides `--validate-only` mode for pipeline verification.
+- Exits with status 1 on validation failures and 0 on success.
 
 ---
 
-## 3. Automated Test Suite Metrics
+## 3. Automated Test Suite Metrics (30 Tests)
 
 | Test Area | Scenarios Covered | Status |
 | :--- | :--- | :---: |
-| **Full Dataset Ingestion** | Real 5,000 rows loaded and validated against Pydantic schema | PASS |
-| **Budget Split Integrity** | Every allocation validated to equal 100% | PASS |
-| **Missing Column Detection** | Missing required columns produce `DatasetMalformedError` | PASS |
-| **Empty File Detection** | Empty files or header-only files produce `DatasetEmptyError` | PASS |
-| **Severity Bound Enforcement** | Values $< 1$ or $> 3$ produce `DatasetValidationError` | PASS |
-| **Guest Count Bound Enforcement** | Non-positive guest counts produce `DatasetValidationError` | PASS |
-| **API Health Liveness** | `GET /health` returns 200 OK | PASS |
-| **API Metadata Privacy** | `GET /api/v1/data-status` returns safe summary without full table | PASS |
-| **Error Isolation** | Corrupted or missing files return 503 JSON without tracebacks | PASS |
+| **Real Dataset Ingestion** | Real 5,000 crisis rows loaded and validated | PASS |
+| **Enum Representation** | All 3 event types, 3 tiers, 3 phases, 3 targets verified | PASS |
+| **Budget Combinations** | All 9 `(event_type, city_tier)` splits verified to sum to 100% | PASS |
+| **Vendor Catalog** | All 8 vendors validated with non-negative lead times & advance % | PASS |
+| **Missing Column Handling** | Triggers `DatasetMalformedError` | PASS |
+| **Empty/Header-Only CSV** | Triggers `DatasetEmptyError` | PASS |
+| **Invalid Enum Values** | Invalid event types, city tiers, phases rejected | PASS |
+| **Severity Range** | Severity outside 1–3 rejected | PASS |
+| **Guest Count Bounds** | Guest count $\le 0$ or $> 2000$ rejected | PASS |
+| **Non-Finite Floats** | `NaN`, `+inf`, `-inf` rejected | PASS |
+| **Cost Impact Sign** | Negative values rejected for non-dropout, accepted for dropout | PASS |
+| **Budget Schema Violations** | Missing/extra categories and totals $\ne 100\%$ rejected | PASS |
+| **Vendor Schema Violations** | Duplicate types (case-insensitive) & empty questions rejected | PASS |
+| **Generator Safety** | Deterministic output, skip-existing rule, crisis protection verified | PASS |
+| **API Endpoints & Metadata** | `/health` 200 OK, `/api/v1/data-status` 200 with safe nested metadata, 503 error isolation | PASS |
 
 ---
 
-## 4. Evaluation Criteria for Next Milestones
-- **Deterministic Budget Rebalancing:** Ensure zero negative allocations and exact budget conservation when cost shocks are applied.
-- **Offline / Sample Mode:** Ensure the crisis recovery assistant provides functional recovery workflows even when the Gemini API is unreachable.
-- **WhatsApp Message Quality:** Verify that generated crisis messages include specific contact targets, timestamp references, and clear action items.
+## 4. Next Milestone Objectives
+- **Milestone 3 (Core Event Planner & Deterministic Engine):**
+  - Implement `app/services/planner.py` to calculate budget splits in INR based on total event budget.
+  - Implement deterministic rebalancing algorithms when unexpected vendor costs or guest changes occur.
+  - Generate planning milestone timelines and day-of-event schedules.
