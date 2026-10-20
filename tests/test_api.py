@@ -164,3 +164,181 @@ def test_root_serves_landing_page(client: TestClient) -> None:
     assert response.status_code == 200
     assert "PlanProof" in response.text
     assert "text/html" in response.headers.get("content-type", "")
+
+
+# ==============================================================================
+# Budget API Endpoint Tests
+# ==============================================================================
+
+
+def test_api_calculate_budget_success(client: TestClient) -> None:
+    """Verify POST /api/v1/budget/calculate successfully computes 8-category allocation."""
+    payload = {
+        "event_type": "wedding",
+        "city_tier": "metro",
+        "total_budget_inr": 2_500_000,
+    }
+    res = client.post("/api/v1/budget/calculate", json=payload)
+    assert res.status_code == 200
+    data = res.json()
+
+    assert data["event_type"] == "wedding"
+    assert data["city_tier"] == "metro"
+    assert data["total_budget_inr"] == 2_500_000
+    assert data["method"] == "largest_remainder_hamilton"
+
+    allocations = data["allocations"]
+    assert allocations["total_budget_inr"] == 2_500_000
+
+    canonical_cats = [
+        "venue",
+        "catering",
+        "decor",
+        "photo_video",
+        "attire_beauty",
+        "entertainment",
+        "logistics",
+        "buffer",
+    ]
+    cat_sum = sum(allocations[c] for c in canonical_cats)
+    assert cat_sum == 2_500_000
+
+
+def test_api_calculate_budget_validation_errors(client: TestClient) -> None:
+    """Verify POST /api/v1/budget/calculate returns 422 for invalid inputs."""
+    # 1. Invalid event type
+    res1 = client.post(
+        "/api/v1/budget/calculate",
+        json={"event_type": "gala_dinner", "city_tier": "metro", "total_budget_inr": 500_000},
+    )
+    assert res1.status_code == 422
+    assert "Traceback" not in res1.text
+    assert res1.json()["error"]["code"] == "VALIDATION_ERROR"
+
+    # 2. Invalid city tier
+    res2 = client.post(
+        "/api/v1/budget/calculate",
+        json={"event_type": "wedding", "city_tier": "rural", "total_budget_inr": 500_000},
+    )
+    assert res2.status_code == 422
+    assert res2.json()["error"]["code"] == "VALIDATION_ERROR"
+
+    # 3. Budget below ₹10,000
+    res3 = client.post(
+        "/api/v1/budget/calculate",
+        json={"event_type": "wedding", "city_tier": "metro", "total_budget_inr": 5_000},
+    )
+    assert res3.status_code == 422
+
+    # 4. Budget above ₹50,000,000
+    res4 = client.post(
+        "/api/v1/budget/calculate",
+        json={"event_type": "wedding", "city_tier": "metro", "total_budget_inr": 60_000_000},
+    )
+    assert res4.status_code == 422
+
+    # 5. Boolean or float budget rejected
+    res5 = client.post(
+        "/api/v1/budget/calculate",
+        json={"event_type": "wedding", "city_tier": "metro", "total_budget_inr": True},
+    )
+    assert res5.status_code == 422
+
+
+def test_api_rebalance_budget_success(client: TestClient) -> None:
+    """Verify POST /api/v1/budget/rebalance handles budget adjustments accurately."""
+    current_alloc = {
+        "venue": 260_000,
+        "catering": 300_000,
+        "decor": 110_000,
+        "photo_video": 90_000,
+        "attire_beauty": 100_000,
+        "entertainment": 50_000,
+        "logistics": 30_000,
+        "buffer": 60_000,
+        "total_budget_inr": 1_000_000,
+    }
+
+    # 1. Budget increase
+    res_inc = client.post(
+        "/api/v1/budget/rebalance",
+        json={"current_allocations": current_alloc, "new_total_budget_inr": 1_200_000},
+    )
+    assert res_inc.status_code == 200
+    data_inc = res_inc.json()
+    assert data_inc["previous_total_inr"] == 1_000_000
+    assert data_inc["new_total_inr"] == 1_200_000
+    assert data_inc["protected_preserved"] is True
+    assert sum(data_inc["differences"].values()) == 200_000
+
+    # 2. Budget decrease (Tier 1 reduction)
+    res_dec = client.post(
+        "/api/v1/budget/rebalance",
+        json={"current_allocations": current_alloc, "new_total_budget_inr": 920_000},
+    )
+    assert res_dec.status_code == 200
+    data_dec = res_dec.json()
+    assert data_dec["new_total_inr"] == 920_000
+    assert data_dec["protected_preserved"] is True
+    # Catering and buffer diffs must be 0
+    assert data_dec["differences"]["catering"] == 0
+    assert data_dec["differences"]["buffer"] == 0
+    assert set(data_dec["categories_reduced_first"]) == {"decor", "entertainment"}
+
+
+def test_api_rebalance_budget_validation_errors(client: TestClient) -> None:
+    """Verify POST /api/v1/budget/rebalance returns 422 for invalid inputs."""
+    # 1. Sum mismatch in current_allocations
+    bad_alloc = {
+        "venue": 260_000,
+        "catering": 300_000,
+        "decor": 110_000,
+        "photo_video": 90_000,
+        "attire_beauty": 100_000,
+        "entertainment": 50_000,
+        "logistics": 30_000,
+        "buffer": 60_000,
+        "total_budget_inr": 999_999,  # does not match 1,000,000
+    }
+    res1 = client.post(
+        "/api/v1/budget/rebalance",
+        json={"current_allocations": bad_alloc, "new_total_budget_inr": 1_200_000},
+    )
+    assert res1.status_code == 422
+    assert "Traceback" not in res1.text
+
+    # 2. Missing category in current_allocations
+    missing_cat = {
+        "venue": 260_000,
+        "catering": 300_000,
+        # missing decor
+        "photo_video": 90_000,
+        "attire_beauty": 100_000,
+        "entertainment": 50_000,
+        "logistics": 30_000,
+        "buffer": 60_000,
+        "total_budget_inr": 890_000,
+    }
+    res2 = client.post(
+        "/api/v1/budget/rebalance",
+        json={"current_allocations": missing_cat, "new_total_budget_inr": 1_000_000},
+    )
+    assert res2.status_code == 422
+
+    # 3. Target budget below ₹10,000 minimum
+    valid_alloc = {
+        "venue": 260_000,
+        "catering": 300_000,
+        "decor": 110_000,
+        "photo_video": 90_000,
+        "attire_beauty": 100_000,
+        "entertainment": 50_000,
+        "logistics": 30_000,
+        "buffer": 60_000,
+        "total_budget_inr": 1_000_000,
+    }
+    res3 = client.post(
+        "/api/v1/budget/rebalance",
+        json={"current_allocations": valid_alloc, "new_total_budget_inr": 5_000},
+    )
+    assert res3.status_code == 422

@@ -15,11 +15,20 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.config import Settings, get_settings
 from app.data_loader import DataLoaderError, DatasetRepository
 from app.schemas import (
+    BudgetCalculateRequest,
+    BudgetCalculationResponse,
+    BudgetRebalanceRequest,
+    BudgetRebalanceResponse,
     DataStatusResponse,
     EventPlanRequest,
     EventValidationResponse,
     HealthResponse,
     StandardErrorResponse,
+)
+from app.services.budget import (
+    BudgetEngineError,
+    calculate_initial_budget,
+    rebalance_budget,
 )
 
 logger = logging.getLogger(__name__)
@@ -129,6 +138,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             },
         )
 
+    @app.exception_handler(BudgetEngineError)
+    async def budget_engine_exception_handler(
+        _request: Request, exc: BudgetEngineError
+    ) -> JSONResponse:
+        """Handle budget engine domain errors without leaking internal stack traces."""
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            content={
+                "error": {
+                    "code": "BUDGET_CALCULATION_ERROR",
+                    "message": str(exc),
+                    "details": None,
+                }
+            },
+        )
+
     @app.exception_handler(Exception)
     async def generic_exception_handler(_request: Request, exc: Exception) -> JSONResponse:
         """Catch unhandled errors and return a safe JSON response."""
@@ -198,6 +223,48 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             valid=True,
             message="Event plan request validated successfully.",
             validated_request=request_data,
+        )
+
+    @app.post(
+        "/api/v1/budget/calculate",
+        response_model=BudgetCalculationResponse,
+        responses={
+            422: {"model": StandardErrorResponse, "description": "Validation or calculation error"},
+        },
+        tags=["Budget"],
+    )
+    async def calculate_budget(
+        request: Request,
+        calc_request: BudgetCalculateRequest,
+    ) -> BudgetCalculationResponse:
+        """Calculate deterministic 8-category budget allocation via Hamilton-Hare method."""
+        repo: DatasetRepository | None = getattr(request.app.state, "dataset_repo", None)
+        splits = repo.budget_splits if repo else None
+        return calculate_initial_budget(
+            event_type=calc_request.event_type,
+            city_tier=calc_request.city_tier,
+            total_budget_inr=calc_request.total_budget_inr,
+            splits_dataset=splits,
+        )
+
+    @app.post(
+        "/api/v1/budget/rebalance",
+        response_model=BudgetRebalanceResponse,
+        responses={
+            422: {
+                "model": StandardErrorResponse,
+                "description": "Validation or rebalance constraint error",
+            },
+        },
+        tags=["Budget"],
+    )
+    async def rebalance_budget_endpoint(
+        rebalance_request: BudgetRebalanceRequest,
+    ) -> BudgetRebalanceResponse:
+        """Rebalance 8-category budget allocation deterministically protecting essentials."""
+        return rebalance_budget(
+            current_allocations=rebalance_request.current_allocations,
+            new_total_budget_inr=rebalance_request.new_total_budget_inr,
         )
 
     # Static assets and index landing page

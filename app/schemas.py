@@ -350,6 +350,19 @@ class EventValidationResponse(BaseModel):
 # ==============================================================================
 
 
+# Canonical 8 budget categories in order
+CANONICAL_BUDGET_CATEGORIES: tuple[str, ...] = (
+    "venue",
+    "catering",
+    "decor",
+    "photo_video",
+    "attire_beauty",
+    "entertainment",
+    "logistics",
+    "buffer",
+)
+
+
 class EventBudgetBreakdown(BaseModel):
     """Category budget allocations in integer INR amounts summing exactly to total."""
 
@@ -654,3 +667,113 @@ class StandardErrorResponse(BaseModel):
     """Consistent application error response envelope."""
 
     error: ErrorDetail = Field(..., description="Standardized error details")
+
+
+# ==============================================================================
+# 6. Budget Engine Schemas
+# ==============================================================================
+
+
+class BudgetCalculateRequest(BaseModel):
+    """Input request schema for initial budget calculation."""
+
+    event_type: EventType = Field(..., description="Event category")
+    city_tier: CityTier = Field(..., description="City tier category")
+    total_budget_inr: int = Field(
+        ...,
+        description="Total event budget in INR (strict integer, ₹10,000 to ₹50,000,000)",
+    )
+
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    @field_validator("total_budget_inr", mode="before")
+    @classmethod
+    def validate_strict_budget_inr(cls, value: Any) -> int:
+        """Reject booleans and decimals for budget, enforce ₹10,000 to ₹50,000,000."""
+        if isinstance(value, bool):
+            raise ValueError("total_budget_inr must be an integer, not a boolean")
+        if isinstance(value, float):
+            raise ValueError("total_budget_inr must be an integer amount in INR, not a decimal")
+        try:
+            val_int = int(value)
+        except (ValueError, TypeError) as err:
+            raise ValueError("total_budget_inr must be a valid integer amount in INR") from err
+
+        if val_int < 10000 or val_int > 50000000:
+            raise ValueError(
+                f"total_budget_inr must be between ₹10,000 and ₹50,000,000, got: ₹{val_int:,}"
+            )
+        return val_int
+
+
+class BudgetCalculationResponse(BaseModel):
+    """Detailed initial budget calculation response."""
+
+    event_type: EventType = Field(..., description="Event category")
+    city_tier: CityTier = Field(..., description="City tier category")
+    total_budget_inr: int = Field(..., description="Total event budget in INR")
+    allocations: EventBudgetBreakdown = Field(..., description="Category rupee allocations")
+    percentages: dict[str, float] = Field(..., description="Per-category percentage breakdown")
+    method: str = Field(
+        default="largest_remainder_hamilton",
+        description="Deterministic rounding algorithm used",
+    )
+
+
+class BudgetRebalanceRequest(BaseModel):
+    """Input request schema for budget rebalancing."""
+
+    current_allocations: EventBudgetBreakdown = Field(
+        ..., description="Existing valid 8-category budget allocation"
+    )
+    new_total_budget_inr: int = Field(
+        ...,
+        description="New total event budget in INR (strict integer, ₹10,000 to ₹50,000,000)",
+    )
+
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("new_total_budget_inr", mode="before")
+    @classmethod
+    def validate_strict_new_budget(cls, value: Any) -> int:
+        """Reject booleans and decimals for new budget, enforce ₹10,000 to ₹50,000,000."""
+        if isinstance(value, bool):
+            raise ValueError("new_total_budget_inr must be an integer, not a boolean")
+        if isinstance(value, float):
+            raise ValueError("new_total_budget_inr must be an integer amount in INR, not a decimal")
+        try:
+            val_int = int(value)
+        except (ValueError, TypeError) as err:
+            raise ValueError("new_total_budget_inr must be a valid integer amount in INR") from err
+
+        if val_int < 10000 or val_int > 50000000:
+            raise ValueError(
+                f"new_total_budget_inr must be between ₹10,000 and ₹50,000,000, got: ₹{val_int:,}"
+            )
+        return val_int
+
+
+class BudgetRebalanceResponse(BaseModel):
+    """Detailed budget rebalance outcome with differences and explanation."""
+
+    previous_total_inr: int = Field(..., description="Previous total event budget in INR")
+    new_total_inr: int = Field(..., description="New total event budget in INR")
+    allocations: EventBudgetBreakdown = Field(..., description="Updated category allocations")
+    differences: dict[str, int] = Field(
+        ..., description="Per-category rupee differences (new - old)"
+    )
+    percentages: dict[str, float] = Field(..., description="Per-category percentage of new total")
+    categories_reduced_first: list[str] = Field(
+        default_factory=list, description="Discretionary categories trimmed first"
+    )
+    protected_categories: list[str] = Field(
+        default_factory=lambda: ["catering", "buffer"],
+        description="Essential categories protected from cuts where possible",
+    )
+    protected_preserved: bool = Field(
+        ...,
+        description="Whether protected categories (catering, buffer) were preserved without cuts",
+    )
+    explanation: str = Field(
+        ..., description="Deterministic human-readable explanation of adjustments"
+    )
