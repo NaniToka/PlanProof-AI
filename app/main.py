@@ -5,14 +5,22 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request, Response, status
+from fastapi import Depends, FastAPI, Request, Response, status
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.config import Settings, get_settings
 from app.data_loader import DataLoaderError, DatasetRepository
-from app.schemas import DataStatusResponse, HealthResponse
+from app.schemas import (
+    DataStatusResponse,
+    EventPlanRequest,
+    EventValidationResponse,
+    HealthResponse,
+    StandardErrorResponse,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -47,13 +55,63 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
 
+    cors_origins = (
+        app_settings.allowed_cors_origins
+        if isinstance(app_settings.allowed_cors_origins, list)
+        else [app_settings.allowed_cors_origins]
+    )
+
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=cors_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # --------------------------------------------------------------------------
+    # Exception Handlers (Standard Error Format)
+    # --------------------------------------------------------------------------
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_exception_handler(
+        _request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        """Format request validation errors into standard error response."""
+        formatted_details = [
+            {
+                "loc": [str(x) for x in err.get("loc", [])],
+                "msg": err.get("msg", ""),
+                "type": err.get("type", ""),
+            }
+            for err in exc.errors()
+        ]
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            content={
+                "error": {
+                    "code": "VALIDATION_ERROR",
+                    "message": "Request validation failed",
+                    "details": formatted_details,
+                }
+            },
+        )
+
+    @app.exception_handler(StarletteHTTPException)
+    async def http_exception_handler(
+        _request: Request, exc: StarletteHTTPException
+    ) -> JSONResponse:
+        """Format standard HTTP exceptions into standard error response."""
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={
+                "error": {
+                    "code": "HTTP_ERROR",
+                    "message": str(exc.detail),
+                    "details": None,
+                }
+            },
+        )
 
     @app.exception_handler(DataLoaderError)
     async def data_loader_exception_handler(
@@ -62,7 +120,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         """Handle data loader exceptions without leaking internal stack traces."""
         return JSONResponse(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            content={"detail": f"Dataset service error: {exc}"},
+            content={
+                "error": {
+                    "code": "DATASET_ERROR",
+                    "message": f"Dataset service error: {exc}",
+                    "details": None,
+                }
+            },
         )
 
     @app.exception_handler(Exception)
@@ -71,17 +135,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         logger.error("Unhandled error encountered: %s", exc, exc_info=True)
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={"detail": "An internal server error occurred."},
+            content={
+                "error": {
+                    "code": "INTERNAL_ERROR",
+                    "message": "An internal server error occurred.",
+                    "details": None,
+                }
+            },
         )
 
+    # --------------------------------------------------------------------------
+    # API Routes
+    # --------------------------------------------------------------------------
+
     @app.get("/health", response_model=HealthResponse, tags=["System"])
-    async def health() -> HealthResponse:
+    async def health(
+        current_settings: Settings = Depends(get_settings),
+    ) -> HealthResponse:
         """Health check endpoint confirming service status."""
         return HealthResponse(
             status="ok",
-            app=app_settings.app_name,
-            version=app_settings.version,
-            environment=app_settings.environment,
+            app=current_settings.app_name,
+            version=current_settings.version,
+            environment=current_settings.environment,
         )
 
     @app.get(
@@ -108,6 +184,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             content=repo.get_status_summary().model_dump(),
         )
 
+    @app.post(
+        "/api/v1/validate-event",
+        response_model=EventValidationResponse,
+        responses={
+            422: {"model": StandardErrorResponse, "description": "Validation failed"},
+        },
+        tags=["Planning"],
+    )
+    async def validate_event(request_data: EventPlanRequest) -> EventValidationResponse:
+        """Validate event planning parameters according to strict domain rules."""
+        return EventValidationResponse(
+            valid=True,
+            message="Event plan request validated successfully.",
+            validated_request=request_data,
+        )
+
     # Static assets and index landing page
     static_dir = Path(__file__).parent / "static"
     if static_dir.exists():
@@ -118,7 +210,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             index_path = static_dir / "index.html"
             if index_path.exists():
                 return FileResponse(index_path)
-            raise HTTPException(status_code=404, detail="Index not found")
+            raise StarletteHTTPException(status_code=404, detail="Index not found")
 
     return app
 

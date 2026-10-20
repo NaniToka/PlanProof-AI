@@ -1,9 +1,24 @@
-"""Pydantic schemas and models for PlanProof AI datasets and API endpoints."""
+"""Pydantic schemas and data contracts for PlanProof AI.
+
+Defines:
+- Core domain enums (EventType, CityTier, EventPhase, MessageTarget, LanguageCode, BookingStatus)
+- Dataset validation models (CrisisScenario, BudgetSplitsDataset, VendorChecklistsDataset)
+- Event planning input request model (EventPlanRequest)
+- Event planning output models (Budget, Timeline, Vendors, Ideas, Risks, Family Council, Crisis)
+- Standard error and status envelope models
+"""
 
 import math
+import re
+from datetime import date
 from enum import StrEnum
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+# ==============================================================================
+# 1. Domain Enums
+# ==============================================================================
 
 
 class EventType(StrEnum):
@@ -36,6 +51,29 @@ class MessageTarget(StrEnum):
     VENDOR = "vendor"
     GUESTS = "guests"
     FAMILY = "family"
+
+
+class LanguageCode(StrEnum):
+    """Supported regional languages for communications and planning."""
+
+    EN = "en"
+    HI = "hi"
+    TE = "te"
+
+
+class BookingStatus(StrEnum):
+    """Status of vendor bookings across planning milestones."""
+
+    PENDING = "pending"
+    CONTACTED = "contacted"
+    SHORTLISTED = "shortlisted"
+    BOOKED = "booked"
+    NOT_NEEDED = "not_needed"
+
+
+# ==============================================================================
+# 2. Dataset Schemas (Preloaded Data Integrity)
+# ==============================================================================
 
 
 class CrisisScenario(BaseModel):
@@ -222,6 +260,327 @@ class VendorChecklistsDataset(BaseModel):
         return self
 
 
+# ==============================================================================
+# 3. Event Planning Input Schemas
+# ==============================================================================
+
+
+class EventPlanRequest(BaseModel):
+    """Strict input schema for event planning requests."""
+
+    event_type: EventType = Field(
+        ..., description="Event category: wedding, birthday, community_event"
+    )
+    guest_count: int = Field(..., description="Estimated guest count (strict integer, 1 to 2000)")
+    total_budget_inr: int = Field(
+        ..., description="Total event budget in INR (strict integer, ₹10,000 to ₹50,000,000)"
+    )
+    city_tier: CityTier = Field(..., description="Indian city tier: metro, tier2, tier3")
+    city: str = Field(
+        ..., min_length=1, max_length=100, description="City name (e.g. Hyderabad, Jaipur)"
+    )
+    theme_notes: str = Field(
+        default="", max_length=1000, description="Optional theme, culture, or style notes"
+    )
+    language: LanguageCode = Field(
+        default=LanguageCode.EN, description="Preferred language: en, hi, te"
+    )
+
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    @field_validator("guest_count", mode="before")
+    @classmethod
+    def validate_strict_guest_count(cls, value: Any) -> int:
+        """Reject booleans and decimals for guest count, enforce 1..2000 range."""
+        if isinstance(value, bool):
+            raise ValueError("guest_count must be an integer, not a boolean")
+        if isinstance(value, float):
+            raise ValueError("guest_count must be an integer, not a decimal")
+        try:
+            val_int = int(value)
+        except (ValueError, TypeError) as err:
+            raise ValueError("guest_count must be a valid integer") from err
+
+        if val_int < 1 or val_int > 2000:
+            raise ValueError(f"guest_count must be between 1 and 2,000, got: {val_int}")
+        return val_int
+
+    @field_validator("total_budget_inr", mode="before")
+    @classmethod
+    def validate_strict_budget_inr(cls, value: Any) -> int:
+        """Reject booleans and decimals for budget, enforce ₹10,000 to ₹50,000,000."""
+        if isinstance(value, bool):
+            raise ValueError("total_budget_inr must be an integer, not a boolean")
+        if isinstance(value, float):
+            raise ValueError("total_budget_inr must be an integer amount in INR, not a decimal")
+        try:
+            val_int = int(value)
+        except (ValueError, TypeError) as err:
+            raise ValueError("total_budget_inr must be a valid integer amount in INR") from err
+
+        if val_int < 10000 or val_int > 50000000:
+            raise ValueError(
+                f"total_budget_inr must be between ₹10,000 and ₹50,000,000, got: ₹{val_int:,}"
+            )
+        return val_int
+
+    @field_validator("city")
+    @classmethod
+    def validate_city_non_empty(cls, value: str) -> str:
+        """Ensure city string is not blank."""
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("City name cannot be empty or whitespace")
+        return stripped
+
+
+class EventValidationResponse(BaseModel):
+    """Confirmation response for validated event inputs without generating full plan."""
+
+    valid: bool = Field(default=True, description="Input validation confirmation flag")
+    message: str = Field(
+        default="Event plan request validated successfully.",
+        description="Validation outcome message",
+    )
+    validated_request: EventPlanRequest = Field(..., description="Normalized request payload")
+
+
+# ==============================================================================
+# 4. Response Schemas for Future Features (Data Contracts)
+# ==============================================================================
+
+
+class EventBudgetBreakdown(BaseModel):
+    """Category budget allocations in integer INR amounts summing exactly to total."""
+
+    venue: int = Field(..., ge=0, description="Venue rental & space costs in INR")
+    catering: int = Field(..., ge=0, description="Food & beverage costs in INR")
+    decor: int = Field(..., ge=0, description="Decoration, floral & staging in INR")
+    photo_video: int = Field(..., ge=0, description="Photography & videography in INR")
+    attire_beauty: int = Field(..., ge=0, description="Attire, styling & makeup in INR")
+    entertainment: int = Field(..., ge=0, description="DJ, music, MC & sound in INR")
+    logistics: int = Field(..., ge=0, description="Transport, accommodation & licenses in INR")
+    buffer: int = Field(..., ge=0, description="Emergency buffer reserve in INR")
+    total_budget_inr: int = Field(..., ge=0, description="Stated total event budget in INR")
+
+    model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def validate_sum_equals_total(self) -> "EventBudgetBreakdown":
+        """Verify that category allocations sum exactly to the stated total budget."""
+        category_sum = (
+            self.venue
+            + self.catering
+            + self.decor
+            + self.photo_video
+            + self.attire_beauty
+            + self.entertainment
+            + self.logistics
+            + self.buffer
+        )
+        if category_sum != self.total_budget_inr:
+            raise ValueError(
+                f"Budget category allocations sum to ₹{category_sum:,}, which does not match "
+                f"the stated total budget of ₹{self.total_budget_inr:,}"
+            )
+        return self
+
+
+class PlanningMilestone(BaseModel):
+    """Pre-event planning milestone with relative week offset or target calendar date."""
+
+    milestone_name: str = Field(..., min_length=1, description="Actionable milestone title")
+    phase: EventPhase = Field(..., description="Lifecycle phase")
+    weeks_before: int | None = Field(default=None, ge=0, description="Weeks before event date")
+    target_date: date | None = Field(default=None, description="Optional target calendar date")
+    description: str = Field(..., description="Milestone instructions and checklist items")
+    completed: bool = Field(default=False, description="Completion toggle")
+
+
+class RunSheetItem(BaseModel):
+    """Event-day timeline run-sheet entry."""
+
+    start_time: str = Field(..., description="Start time (e.g. '09:00 AM' or '14:30')")
+    end_time: str = Field(..., description="End time (e.g. '10:30 AM' or '16:00')")
+    activity_name: str = Field(..., min_length=1, description="Program segment or activity title")
+    responsible_party: str = Field(..., description="Lead organizer, vendor, or family contact")
+    description: str = Field(..., description="Details and special cues")
+
+    @model_validator(mode="after")
+    def validate_time_range(self) -> "RunSheetItem":
+        """Validate start and end time order if provided in HH:MM 24h format."""
+        pattern = r"^([01]?\d|2[0-3]):([0-5]\d)$"
+        m_start = re.match(pattern, self.start_time.strip())
+        m_end = re.match(pattern, self.end_time.strip())
+        if m_start and m_end:
+            h_start, min_start = int(m_start.group(1)), int(m_start.group(2))
+            h_end, min_end = int(m_end.group(1)), int(m_end.group(2))
+            t_start = h_start * 60 + min_start
+            t_end = h_end * 60 + min_end
+            if t_end < t_start:
+                msg = (
+                    f"Run-sheet end time '{self.end_time}' cannot be earlier "
+                    f"than start time '{self.start_time}'"
+                )
+                raise ValueError(msg)
+        return self
+
+
+class EventTimelineResponse(BaseModel):
+    """Composite event timeline combining planning milestones and day-of-event run-sheet."""
+
+    planning_milestones: list[PlanningMilestone] = Field(
+        default_factory=list, description="Pre-event milestone checklist"
+    )
+    run_sheet: list[RunSheetItem] = Field(
+        default_factory=list, description="Day-of event schedule and run-sheet"
+    )
+
+
+class VendorPlanItem(BaseModel):
+    """Vendor checklist plan item for event booking."""
+
+    vendor_type: str = Field(..., description="Vendor category identifier")
+    lead_time_weeks: int = Field(..., ge=0, description="Recommended booking lead time in weeks")
+    typical_advance_pct: float = Field(
+        ..., ge=0.0, le=100.0, description="Typical advance deposit percentage"
+    )
+    allocated_budget_inr: int = Field(
+        default=0, ge=0, description="Budget allocated for this vendor in INR"
+    )
+    booking_status: BookingStatus = Field(
+        default=BookingStatus.PENDING, description="Booking workflow status"
+    )
+    ask_before_booking: list[str] = Field(
+        default_factory=list, description="Key screening questions"
+    )
+
+
+class PersonalizedIdea(BaseModel):
+    """Personalized creative suggestion for event enhancement."""
+
+    title: str = Field(..., min_length=1, description="Concept title")
+    explanation: str = Field(..., description="Rationale and cultural/theme alignment")
+    implementation_details: str = Field(..., description="Practical execution and sourcing steps")
+    estimated_cost_inr: int | None = Field(
+        default=None, ge=0, description="Estimated incremental cost in INR"
+    )
+    target_category: str | None = Field(default=None, description="Relevant budget category")
+
+
+class PreMortemRisk(BaseModel):
+    """Pre-mortem risk assessment with probability and concrete mitigation."""
+
+    risk_description: str = Field(..., min_length=1, description="Identified failure mode or risk")
+    probability: float = Field(
+        ..., ge=0.0, le=1.0, description="Estimated risk probability between 0 and 1"
+    )
+    cost_impact_pct_of_budget: float = Field(..., description="Potential cost impact percentage")
+    mitigation: str = Field(..., min_length=1, description="Concrete mitigation strategy or Plan B")
+
+    @field_validator("probability")
+    @classmethod
+    def validate_probability(cls, value: float) -> float:
+        """Validate probability is finite and between 0.0 and 1.0."""
+        if not math.isfinite(value) or value < 0.0 or value > 1.0:
+            raise ValueError(f"Risk probability must be between 0.0 and 1.0, got: {value}")
+        return value
+
+
+class PersonaReview(BaseModel):
+    """Review and feedback from a single family council persona."""
+
+    persona_name: str = Field(..., description="Name/title of the persona")
+    concerns: list[str] = Field(
+        ..., min_length=1, description="Key concerns identified by this persona"
+    )
+    suggested_changes: list[str] = Field(
+        ..., min_length=1, description="Specific alterations requested"
+    )
+
+
+class FamilyCouncilCompromise(BaseModel):
+    """Synthesized compromise reconciling persona objections into an agreed plan."""
+
+    agreed_plan: str = Field(
+        ..., description="Balanced synthesis that addresses primary persona concerns"
+    )
+    remaining_objections: dict[str, list[str]] = Field(
+        default_factory=dict, description="Documented remaining trade-offs per persona"
+    )
+
+
+class FamilyCouncilResponse(BaseModel):
+    """Multi-perspective family council deliberation covering four distinct personas."""
+
+    budget_holder: PersonaReview = Field(..., description="Pragmatic treasurer / financier review")
+    elder_relative: PersonaReview = Field(..., description="Traditional elder cultural review")
+    picky_friend: PersonaReview = Field(..., description="Modern peer aesthetic/experience review")
+    parent_with_kids: PersonaReview = Field(..., description="Family logistics and comfort review")
+    compromise: FamilyCouncilCompromise = Field(..., description="Synthesized family consensus")
+
+
+class WhatsAppMessageDraft(BaseModel):
+    """Plain-text crisis communication message ready to be copied."""
+
+    target: MessageTarget = Field(..., description="Target audience: vendor, guests, family")
+    recipient_label: str = Field(
+        ..., description="Recipient identifier (e.g. 'All Guests', 'Backup Caterer')"
+    )
+    message_text: str = Field(
+        ..., min_length=1, description="Formatted message suitable for copying"
+    )
+
+
+class CrisisRecoveryPlan(BaseModel):
+    """Actionable crisis recovery playbook with timeline updates and communication drafts."""
+
+    detected_crisis_type: str = Field(..., description="Category of the crisis encountered")
+    severity: int = Field(
+        ..., ge=1, le=3, description="Crisis severity rating (1=minor, 3=critical)"
+    )
+    timeline_changes: list[str] = Field(
+        default_factory=list, description="Immediate timeline adjustments"
+    )
+    explanation: str = Field(..., description="Root cause and operational impact assessment")
+    recommended_actions: list[str] = Field(
+        ..., min_length=1, description="Step-by-step recovery actions"
+    )
+    whatsapp_message_drafts: list[WhatsAppMessageDraft] = Field(
+        default_factory=list, description="Ready-to-copy WhatsApp messages for stakeholders"
+    )
+
+
+class EventPlanResponse(BaseModel):
+    """Full composite event plan data contract for future AI generation."""
+
+    event_name: str = Field(..., description="Generated descriptive event title")
+    event_type: EventType = Field(..., description="Event type")
+    city_tier: CityTier = Field(..., description="City tier")
+    city: str = Field(..., description="City location")
+    guest_count: int = Field(..., description="Guest headcount")
+    total_budget_inr: int = Field(..., description="Total budget in INR")
+    budget: EventBudgetBreakdown = Field(..., description="Deterministic category budget breakdown")
+    timeline: EventTimelineResponse = Field(..., description="Planning and execution timeline")
+    vendor_plan: list[VendorPlanItem] = Field(
+        default_factory=list, description="Vendor booking checklist"
+    )
+    personalized_ideas: list[PersonalizedIdea] = Field(
+        default_factory=list, description="Curated personalized ideas"
+    )
+    risks: list[PreMortemRisk] = Field(
+        default_factory=list, description="Pre-mortem risk assessment"
+    )
+    family_council: FamilyCouncilResponse = Field(
+        ..., description="Four-persona family council review"
+    )
+
+
+# ==============================================================================
+# 5. System Status and Standard Error Schemas
+# ==============================================================================
+
+
 class HealthResponse(BaseModel):
     """Response schema for application health check."""
 
@@ -271,13 +630,9 @@ class DataStatusResponse(BaseModel):
 
     status: str = Field(..., description="Data repository status: healthy, degraded, error")
     dataset_loaded: bool = Field(..., description="Overall dataset health status")
-
-    # Detailed dataset summaries
     crisis_scenarios: CrisisSummary = Field(...)
     budget_splits: BudgetSummary = Field(...)
     vendor_checklists: VendorSummary = Field(...)
-
-    # Top-level backward compatibility fields
     row_count: int = Field(..., description="Crisis scenario count")
     available_crisis_types: list[str] = Field(default_factory=list)
     available_event_types: list[str] = Field(default_factory=list)
@@ -285,3 +640,17 @@ class DataStatusResponse(BaseModel):
     severity_range: SeverityRange = Field(...)
     budget_splits_loaded: bool = Field(...)
     vendor_checklists_loaded: bool = Field(...)
+
+
+class ErrorDetail(BaseModel):
+    """Standardized error envelope payload."""
+
+    code: str = Field(..., description="Machine-readable error classification code")
+    message: str = Field(..., description="Human-readable explanation of the error")
+    details: Any | None = Field(default=None, description="Optional safe structured context")
+
+
+class StandardErrorResponse(BaseModel):
+    """Consistent application error response envelope."""
+
+    error: ErrorDetail = Field(..., description="Standardized error details")
