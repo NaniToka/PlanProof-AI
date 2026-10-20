@@ -34,6 +34,10 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
 addopts = "-v --strict-markers"
+asyncio_mode = "auto"
+markers = [
+    "asyncio: marks tests as asynchronous",
+]
 
 [tool.ruff]
 line-length = 100

@@ -777,3 +777,12 @@ class BudgetRebalanceResponse(BaseModel):
     explanation: str = Field(
         ..., description="Deterministic human-readable explanation of adjustments"
     )
+
+
+class AIStatusResponse(BaseModel):
+    """Configuration status for the Google Gemini AI integration."""
+
+    configured: bool = Field(..., description="Whether Gemini API is configured with an API key")
+    model: str = Field(..., description="Configured Gemini model identifier")
+    timeout_seconds: float = Field(..., description="Configured request timeout in seconds")
+    max_retries: int = Field(..., description="Configured maximum retries for transient failures")

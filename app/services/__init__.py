@@ -9,6 +9,15 @@ from app.services.budget import (
     rebalance_budget,
     validate_budget_categories,
 )
+from app.services.gemini_service import (
+    GeminiError,
+    GeminiInvalidOutputError,
+    GeminiNotConfiguredError,
+    GeminiProviderError,
+    GeminiRateLimitError,
+    GeminiService,
+    GeminiTimeoutError,
+)
 
 __all__ = [
     "BudgetConstraintError",
@@ -18,4 +27,11 @@ __all__ = [
     "largest_remainder_allocation",
     "rebalance_budget",
     "validate_budget_categories",
+    "GeminiError",
+    "GeminiInvalidOutputError",
+    "GeminiNotConfiguredError",
+    "GeminiProviderError",
+    "GeminiRateLimitError",
+    "GeminiService",
+    "GeminiTimeoutError",
 ]

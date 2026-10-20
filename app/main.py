@@ -16,6 +16,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.config import ConfigurationError, Settings, get_settings
 from app.data_loader import DataLoaderError, DatasetRepository
 from app.schemas import (
+    AIStatusResponse,
     BudgetCalculateRequest,
     BudgetCalculationResponse,
     BudgetRebalanceRequest,
@@ -30,6 +31,15 @@ from app.services.budget import (
     BudgetEngineError,
     calculate_initial_budget,
     rebalance_budget,
+)
+from app.services.gemini_service import (
+    GeminiError,
+    GeminiInvalidOutputError,
+    GeminiNotConfiguredError,
+    GeminiProviderError,
+    GeminiRateLimitError,
+    GeminiService,
+    GeminiTimeoutError,
 )
 
 logger = logging.getLogger(__name__)
@@ -56,6 +66,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         app.state.dataset_repo = repo
         app.state.settings = app_settings
+        app.state.gemini_service = GeminiService(settings=app_settings)
         yield
 
     app = FastAPI(
@@ -65,6 +76,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     app.state.settings = app_settings
+    app.state.gemini_service = GeminiService(settings=app_settings)
     if settings is not None:
         app.dependency_overrides[get_settings] = lambda: app_settings
 
@@ -185,6 +197,102 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             },
         )
 
+    @app.exception_handler(GeminiNotConfiguredError)
+    async def gemini_not_configured_handler(
+        _request: Request, exc: GeminiNotConfiguredError
+    ) -> JSONResponse:
+        """Handle missing Gemini API key configuration."""
+        safe_msg = sanitize_error_message(str(exc))
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={
+                "error": {
+                    "code": "AI_NOT_CONFIGURED",
+                    "message": safe_msg,
+                    "details": None,
+                }
+            },
+        )
+
+    @app.exception_handler(GeminiTimeoutError)
+    async def gemini_timeout_handler(_request: Request, exc: GeminiTimeoutError) -> JSONResponse:
+        """Handle Gemini request timeouts."""
+        safe_msg = sanitize_error_message(str(exc))
+        return JSONResponse(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            content={
+                "error": {
+                    "code": "AI_TIMEOUT",
+                    "message": safe_msg,
+                    "details": None,
+                }
+            },
+        )
+
+    @app.exception_handler(GeminiRateLimitError)
+    async def gemini_rate_limit_handler(
+        _request: Request, exc: GeminiRateLimitError
+    ) -> JSONResponse:
+        """Handle Gemini API rate limiting."""
+        safe_msg = sanitize_error_message(str(exc))
+        return JSONResponse(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            content={
+                "error": {
+                    "code": "AI_RATE_LIMIT",
+                    "message": safe_msg,
+                    "details": None,
+                }
+            },
+        )
+
+    @app.exception_handler(GeminiInvalidOutputError)
+    async def gemini_invalid_output_handler(
+        _request: Request, exc: GeminiInvalidOutputError
+    ) -> JSONResponse:
+        """Handle Gemini returning malformed or schema-incompatible JSON."""
+        safe_msg = sanitize_error_message(str(exc))
+        return JSONResponse(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            content={
+                "error": {
+                    "code": "AI_OUTPUT_VALIDATION_ERROR",
+                    "message": safe_msg,
+                    "details": None,
+                }
+            },
+        )
+
+    @app.exception_handler(GeminiProviderError)
+    async def gemini_provider_handler(_request: Request, exc: GeminiProviderError) -> JSONResponse:
+        """Handle upstream Gemini service and network errors."""
+        safe_msg = sanitize_error_message(str(exc))
+        return JSONResponse(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            content={
+                "error": {
+                    "code": "AI_PROVIDER_ERROR",
+                    "message": safe_msg,
+                    "details": None,
+                }
+            },
+        )
+
+    @app.exception_handler(GeminiError)
+    async def gemini_generic_handler(_request: Request, exc: GeminiError) -> JSONResponse:
+        """Handle unexpected Gemini service domain errors."""
+        safe_msg = sanitize_error_message(str(exc))
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={
+                "error": {
+                    "code": "AI_SERVICE_ERROR",
+                    "message": safe_msg,
+                    "details": None,
+                }
+            },
+        )
+
     @app.exception_handler(Exception)
     async def generic_exception_handler(_request: Request, exc: Exception) -> JSONResponse:
         """Catch unhandled errors and return a safe JSON response."""
@@ -240,6 +348,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return JSONResponse(
             status_code=status.HTTP_200_OK,
             content=repo.get_status_summary().model_dump(),
+        )
+
+    @app.get(
+        "/api/v1/ai/status",
+        response_model=AIStatusResponse,
+        tags=["AI"],
+        summary="Check Gemini AI service configuration status",
+    )
+    async def ai_status(
+        request: Request,
+        current_settings: Settings = Depends(get_settings),
+    ) -> AIStatusResponse:
+        """Return safe configuration status of Gemini AI without exposing sensitive keys."""
+        active_settings = getattr(request.app.state, "settings", current_settings)
+        svc: GeminiService | None = getattr(request.app.state, "gemini_service", None)
+        is_configured = svc.is_configured if svc else bool(active_settings.gemini_api_key)
+        return AIStatusResponse(
+            configured=is_configured,
+            model=active_settings.gemini_model,
+            timeout_seconds=active_settings.gemini_timeout_seconds,
+            max_retries=active_settings.gemini_max_retries,
         )
 
     @app.post(
