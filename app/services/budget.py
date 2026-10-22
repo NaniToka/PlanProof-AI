@@ -571,3 +571,134 @@ def rebalance_budget(
         protected_preserved=protected_preserved,
         explanation=explanation,
     )
+
+
+def compute_budget_warnings(
+    total_budget_inr: int,
+    guest_count: int,
+    event_type: EventType | str,
+    allocations: EventBudgetBreakdown | Mapping[str, int],
+) -> list[str]:
+    """Compute deterministic budget constraint warnings based on documented mathematical rules.
+
+    Rules:
+    1. Per-guest allocation constraint:
+       - Wedding: < ₹1,500/guest -> highly constrained for multi-meal wedding hospitality.
+       - Birthday: < ₹500/guest -> tight for food and party entertainment.
+       - Community event: < ₹250/guest -> limited for stage, sound, and refreshments.
+    2. Platform boundary threshold:
+       - <= ₹25,000 -> near minimum platform limit; professional vendor coverage in urban tiers may be restricted.
+    3. Buffer sufficiency:
+       - Buffer < 5% of total budget or < ₹2,000 -> low contingency reserve for emergency recovery.
+    4. Essential category squeeze:
+       - Catering < ₹5,000 -> may only support DIY snacks or light tea refreshments.
+
+    Args:
+        total_budget_inr: Total event budget in INR.
+        guest_count: Estimated guest headcount.
+        event_type: Event category.
+        allocations: Category rupee values mapping or EventBudgetBreakdown.
+
+    Returns:
+        List of human-readable deterministic warning strings.
+    """
+    warnings: list[str] = []
+    ev_type = event_type.value if isinstance(event_type, EventType) else str(event_type)
+
+    # 1. Per-guest check
+    if guest_count > 0:
+        per_guest = total_budget_inr // guest_count
+        if ev_type == EventType.WEDDING.value and per_guest < 1500:
+            warnings.append(
+                f"Budget per guest is ₹{per_guest:,}, which is tight for a wedding celebration. "
+                "Hospitality and multi-course catering options may require significant scope adjustments."
+            )
+        elif ev_type == EventType.BIRTHDAY.value and per_guest < 500:
+            warnings.append(
+                f"Budget per guest is ₹{per_guest:,}, which is tight for a birthday event with catering and entertainment."
+            )
+        elif ev_type == EventType.COMMUNITY_EVENT.value and per_guest < 250:
+            warnings.append(
+                f"Budget per guest is ₹{per_guest:,}, which may restrict venue seating, public address equipment, and refreshments."
+            )
+
+    # 2. Platform boundary threshold
+    if total_budget_inr <= 25000:
+        warnings.append(
+            f"Total budget of ₹{total_budget_inr:,} is near the entry platform threshold (₹10,000). "
+            "Commercial vendor availability in urban tiers may be restricted."
+        )
+
+    # Helper to retrieve category value
+    def get_cat(c: str) -> int:
+        if isinstance(allocations, EventBudgetBreakdown):
+            return getattr(allocations, c)
+        return allocations.get(c, 0)
+
+    # 3. Buffer sufficiency check
+    buf_amt = get_cat("buffer")
+    buf_pct = (buf_amt / total_budget_inr) * 100.0 if total_budget_inr > 0 else 0.0
+    if buf_pct < 5.0 or buf_amt < 2000:
+        warnings.append(
+            f"Emergency contingency buffer is ₹{buf_amt:,} ({buf_pct:.1f}% of total budget), "
+            "which is below the recommended 5% safety margin."
+        )
+
+    # 4. Catering squeeze check
+    cat_amt = get_cat("catering")
+    if cat_amt < 5000:
+        warnings.append(
+            f"Catering allocation is ₹{cat_amt:,}; catering services may need to rely on DIY or family-catered arrangements."
+        )
+
+    return warnings
+
+
+def generate_budget_explanation(
+    total_budget_inr: int,
+    event_type: EventType | str,
+    city_tier: CityTier | str,
+    allocations: EventBudgetBreakdown | Mapping[str, int],
+    percentages: Mapping[str, float],
+) -> str:
+    """Generate a deterministic, mathematically grounded explanation of the budget plan.
+
+    Covers:
+    - Total budget entered by the user.
+    - How total is divided across 8 categories via Hamilton-Hare largest remainder method.
+    - Preserves emergency contingency buffer.
+    - Confirms exact mathematical balance (sum equals total).
+    - Clearly distinguishes mathematical allocation from binding vendor quotations.
+
+    Args:
+        total_budget_inr: Stated total event budget in INR.
+        event_type: Event category.
+        city_tier: Logistics tier.
+        allocations: Category allocation amounts.
+        percentages: Display percentages.
+
+    Returns:
+        Structured explanatory narrative string.
+    """
+    ev_type = event_type.value if isinstance(event_type, EventType) else str(event_type)
+    c_tier = city_tier.value if isinstance(city_tier, CityTier) else str(city_tier)
+
+    def get_cat(c: str) -> int:
+        if isinstance(allocations, EventBudgetBreakdown):
+            return getattr(allocations, c)
+        return allocations.get(c, 0)
+
+    buf_amt = get_cat("buffer")
+    buf_pct = percentages.get("buffer", 0.0)
+
+    return (
+        f"The total budget of ₹{total_budget_inr:,} was allocated across 8 categories "
+        f"for a {ev_type} in {c_tier} tier using the Hamilton-Hare largest remainder method. "
+        f"All allocations are exact non-negative integers that sum precisely to ₹{total_budget_inr:,} "
+        f"with zero unallocated balance. "
+        f"The plan preserves an emergency contingency buffer of ₹{buf_amt:,} ({buf_pct:.1f}% of total budget) "
+        f"to absorb unexpected event-day cost increases. "
+        f"Note: These category splits represent baseline mathematical planning estimates based on historical benchmarks, "
+        f"not binding vendor quotations or venue rate guarantees."
+    )
+

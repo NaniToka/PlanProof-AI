@@ -12,7 +12,7 @@ import math
 import re
 from datetime import date, datetime, timezone
 from enum import StrEnum
-from typing import Any, Generic, TypeVar
+from typing import Any, Generic, Literal, TypeVar
 from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -582,6 +582,21 @@ class EventBudgetBreakdown(BaseModel):
             )
         return self
 
+    def __getitem__(self, item: str) -> int:
+        """Allow dict-like key access to budget category amounts."""
+        if hasattr(self, item):
+            val = getattr(self, item)
+            if isinstance(val, int):
+                return val
+        raise KeyError(item)
+
+    def get(self, item: str, default: Any = None) -> Any:
+        """Allow dict-like get method for budget categories."""
+        if hasattr(self, item):
+            return getattr(self, item)
+        return default
+
+
 
 class EventProfile(BaseModel):
     """Complete domain model representing an event profile."""
@@ -636,6 +651,75 @@ class EventListResponse(BaseModel):
     events: list[EventProfile] = Field(default_factory=list, description="List of event profiles")
 
     model_config = ConfigDict(extra="forbid")
+
+
+class EventBudgetPlanResponse(BaseModel):
+    """Event-specific budget plan response with deterministic allocations, percentages, and warnings."""
+
+    event_id: str = Field(..., description="Server-generated unique identifier")
+    total_budget_inr: int = Field(..., description="Total event budget in INR")
+    currency: Literal["INR"] = Field(default="INR", description="Three-letter currency code, fixed to INR")
+    allocations: EventBudgetBreakdown = Field(..., description="8-category deterministic rupee allocation")
+    allocation_percentages: dict[str, float] = Field(
+        ..., description="Exact percentage shares corresponding to category allocations"
+    )
+    remaining_budget_inr: int = Field(
+        default=0, ge=0, description="Remaining unallocated rupee balance (0 when exact)"
+    )
+    warnings: list[str] = Field(
+        default_factory=list, description="Deterministic budget constraints and warnings"
+    )
+    explanation: str = Field(
+        ..., description="Deterministic mathematical explanation of the allocation and buffer policy"
+    )
+
+    model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def validate_plan_balance(self) -> "EventBudgetPlanResponse":
+        """Verify that allocations match total_budget_inr and remaining_budget_inr is consistent."""
+        if self.allocations.total_budget_inr != self.total_budget_inr:
+            raise ValueError(
+                f"Allocations total budget ₹{self.allocations.total_budget_inr:,} does not match "
+                f"plan total budget ₹{self.total_budget_inr:,}"
+            )
+        category_sum = (
+            self.allocations.venue
+            + self.allocations.catering
+            + self.allocations.decor
+            + self.allocations.photo_video
+            + self.allocations.attire_beauty
+            + self.allocations.entertainment
+            + self.allocations.logistics
+            + self.allocations.buffer
+        )
+        if category_sum + self.remaining_budget_inr != self.total_budget_inr:
+            raise ValueError(
+                f"Category sum (₹{category_sum:,}) + remaining (₹{self.remaining_budget_inr:,}) "
+                f"does not equal total budget (₹{self.total_budget_inr:,})"
+            )
+        return self
+
+
+class EventBudgetRebalanceRequest(BaseModel):
+    """Input request schema for rebalancing a saved event profile's budget."""
+
+    new_total_budget_inr: int = Field(
+        ...,
+        description="New total event budget in INR (strict integer, ₹10,000 to ₹50,000,000)",
+    )
+    strict_protect: bool = Field(
+        default=False,
+        description="If True, disallow cuts to catering and buffer reserve",
+    )
+
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("new_total_budget_inr", mode="before")
+    @classmethod
+    def validate_budget(cls, value: Any) -> int:
+        return validate_strict_budget_inr_value(value)
+
 
 
 class PlanningMilestone(BaseModel):

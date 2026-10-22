@@ -118,12 +118,93 @@ PlanProof AI supports three explicit AI operation modes controlled by the `AI_MO
 | `GET` | `/api/v1/events/{event_id}` | Retrieve event profile by server-generated ID |
 | `PATCH` | `/api/v1/events/{event_id}` | Partially update event profile with automatic budget recomputation |
 | `GET` | `/api/v1/events` | List active event profiles with pagination |
+| `GET` | `/api/v1/events/{event_id}/budget` | Retrieve event-specific deterministic budget plan with warnings & explanation |
+| `POST` | `/api/v1/events/{event_id}/budget/rebalance` | Rebalance saved event's budget preserving essential categories |
 | `POST` | `/api/v1/validate-event` | Strict domain validation for event planning requests |
 | `POST` | `/api/v1/budget/calculate` | Deterministic 8-category budget allocation (Hamilton-Hare method) |
 | `POST` | `/api/v1/budget/rebalance` | Budget rebalancing with essential category preservation |
 | `POST` | `/api/v1/plan/timeline` | AI-orchestrated event planning checklist and run-sheet with fallback |
 | `POST` | `/api/v1/plan/risks` | AI-orchestrated pre-mortem risk assessment with deterministic fallback |
 | `GET` | `/docs` | OpenAPI / Swagger interactive documentation |
+
+---
+
+## Event-Specific Budget Planning
+
+PlanProof AI implements deterministic, mathematically verified budget planning for Indian celebrations. Gemini or other LLMs are **never** permitted to compute or adjust budget arithmetic.
+
+### 1. Endpoint: `GET /api/v1/events/{event_id}/budget`
+
+Retrieves the 8-category budget plan for a saved event profile:
+
+- **Input:** Path parameter `event_id` (e.g. `EV-A1B2C3D4E5F6`).
+- **HTTP Status:** `200 OK` on success, `404 Not Found` if event does not exist.
+- **Independence:** Functions 100% deterministically with zero Gemini API calls and in demo mode.
+
+### 2. Allocation Categories
+
+Every event budget is divided across 8 canonical categories:
+
+1. `venue`: Hall rental, lawn leasing, and space charges.
+2. `catering`: Multi-meal food, beverages, service, and live counters.
+3. `decor`: Floral staging, mandap/backdrop, lighting, and entry installations.
+4. `photo_video`: Candid photography, cinematography, drone footage, and albums.
+5. `attire_beauty`: Outfits, bridal/groom styling, hair, and makeup artistry.
+6. `entertainment`: DJ, live music, sangeet choreographers, sound systems, and MC.
+7. `logistics`: Guest transport, room bookings, permissions, and generator backups.
+8. `buffer`: Dedicated emergency contingency reserve (protected).
+
+### 3. Rounding & Deterministic Allocation Method
+
+- Allocations are computed using the **Hamilton-Hare Largest Remainder Method**.
+- Integer rupee amounts are initially assigned via truncated proportions (`floor(weight * total)`).
+- Remaining rupees are distributed one-by-one to categories with the largest fractional remainders, breaking ties deterministically in canonical category order.
+- **Guarantee:** All amounts are non-negative integers that sum **exactly** to `total_budget_inr` down to the last rupee (`remaining_budget_inr = 0`).
+
+### 4. Behavior on Event Updates & Recalculation
+
+- When an event profile's `total_budget_inr`, `city_tier`, or `event_type` is modified via `PATCH /api/v1/events/{event_id}`, allocations are immediately recomputed without retaining stale values.
+- Alternatively, `POST /api/v1/events/{event_id}/budget/rebalance` allows targeted budget adjustments using our priority-based policy: trimming discretionary categories (`entertainment`, `decor`) first while strictly preserving essential guest hospitality (`catering`, `buffer`).
+
+### 5. Disclaimer
+
+> **Important:** Budget category allocations represent baseline mathematical planning estimates based on historical statistical ratios. They are not binding vendor quotations, commercial proposals, or venue rate guarantees.
+
+### 6. Sample Response
+
+```json
+{
+  "event_id": "EV-35D19DF60424",
+  "total_budget_inr": 2500000,
+  "currency": "INR",
+  "allocations": {
+    "venue": 750000,
+    "catering": 600000,
+    "decor": 350000,
+    "photo_video": 250000,
+    "attire_beauty": 200000,
+    "entertainment": 150000,
+    "logistics": 100000,
+    "buffer": 100000,
+    "total_budget_inr": 2500000
+  },
+  "allocation_percentages": {
+    "venue": 30.0,
+    "catering": 24.0,
+    "decor": 14.0,
+    "photo_video": 10.0,
+    "attire_beauty": 8.0,
+    "entertainment": 6.0,
+    "logistics": 4.0,
+    "buffer": 4.0
+  },
+  "remaining_budget_inr": 0,
+  "warnings": [
+    "Emergency contingency buffer is ₹100,000 (4.0% of total budget), which is below the recommended 5% safety margin."
+  ],
+  "explanation": "The total budget of ₹2,500,000 was allocated across 8 categories for a wedding in metro tier using the Hamilton-Hare largest remainder method. All allocations are exact non-negative integers that sum precisely to ₹2,500,000 with zero unallocated balance. The plan preserves an emergency contingency buffer of ₹100,000 (4.0% of total budget) to absorb unexpected event-day cost increases. Note: These category splits represent baseline mathematical planning estimates based on historical benchmarks, not binding vendor quotations or venue rate guarantees."
+}
+```
 
 ---
 

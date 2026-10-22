@@ -23,12 +23,20 @@ from uuid import uuid4
 from app.config import Settings, get_settings
 from app.data_loader import DatasetRepository
 from app.schemas import (
+    CANONICAL_BUDGET_CATEGORIES,
+    BudgetRebalanceResponse,
+    EventBudgetPlanResponse,
     EventCreateRequest,
     EventProfile,
     EventUpdateRequest,
     validate_event_date,
 )
-from app.services.budget import calculate_initial_budget
+from app.services.budget import (
+    calculate_initial_budget,
+    compute_budget_warnings,
+    generate_budget_explanation,
+    rebalance_budget,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -256,3 +264,118 @@ class EventService:
     ) -> tuple[list[EventProfile], int]:
         """Return a paginated list of active event profiles and total count."""
         return await self.store.list(skip=skip, limit=limit)
+
+    async def get_event_budget_plan(
+        self, event_id: str
+    ) -> EventBudgetPlanResponse | None:
+        """Retrieve the deterministic budget plan for a saved event profile.
+
+        Args:
+            event_id: Unique event identifier.
+
+        Returns:
+            EventBudgetPlanResponse if event exists, None otherwise.
+        """
+        profile = await self.store.get(event_id)
+        if profile is None:
+            return None
+
+        # If profile doesn't have budget (defensive check), calculate it
+        if profile.budget is None:
+            splits = self.dataset_repo.budget_splits if self.dataset_repo else None
+            calc_resp = calculate_initial_budget(
+                event_type=profile.event_type,
+                city_tier=profile.city_tier,
+                total_budget_inr=profile.total_budget_inr,
+                splits_dataset=splits,
+            )
+            allocations = calc_resp.allocations
+        else:
+            allocations = profile.budget
+
+        # Compute exact percentages from actual integer allocations
+        percentages: dict[str, float] = {
+            cat: round((getattr(allocations, cat) / profile.total_budget_inr) * 100.0, 2)
+            for cat in CANONICAL_BUDGET_CATEGORIES
+        }
+
+        # Deterministic constraint warnings
+        warnings = compute_budget_warnings(
+            total_budget_inr=profile.total_budget_inr,
+            guest_count=profile.guest_count,
+            event_type=profile.event_type,
+            allocations=allocations,
+        )
+
+        # Deterministic explanatory narrative
+        explanation = generate_budget_explanation(
+            total_budget_inr=profile.total_budget_inr,
+            event_type=profile.event_type,
+            city_tier=profile.city_tier,
+            allocations=allocations,
+            percentages=percentages,
+        )
+
+        return EventBudgetPlanResponse(
+            event_id=profile.event_id,
+            total_budget_inr=profile.total_budget_inr,
+            currency="INR",
+            allocations=allocations,
+            allocation_percentages=percentages,
+            remaining_budget_inr=0,
+            warnings=warnings,
+            explanation=explanation,
+        )
+
+    async def rebalance_event_budget(
+        self,
+        event_id: str,
+        new_total_budget_inr: int,
+        strict_protect: bool = False,
+    ) -> BudgetRebalanceResponse | None:
+        """Rebalance an existing event profile's budget using priority-based category trimming.
+
+        Args:
+            event_id: Unique event identifier.
+            new_total_budget_inr: Target new budget in INR.
+            strict_protect: If True, disallow cuts to catering and buffer reserve.
+
+        Returns:
+            BudgetRebalanceResponse if event exists, None otherwise.
+        """
+        profile = await self.store.get(event_id)
+        if profile is None:
+            return None
+
+        rebalance_resp = rebalance_budget(
+            current_allocations=profile.budget,
+            new_total_budget_inr=new_total_budget_inr,
+            strict_protect=strict_protect,
+        )
+
+        # Update profile with new budget and timestamp
+        now = datetime.now(timezone.utc)
+        updated_profile = EventProfile(
+            event_id=profile.event_id,
+            event_type=profile.event_type,
+            event_name=profile.event_name,
+            city=profile.city,
+            city_tier=profile.city_tier,
+            event_date=profile.event_date,
+            guest_count=profile.guest_count,
+            total_budget_inr=new_total_budget_inr,
+            language=profile.language,
+            theme_notes=profile.theme_notes,
+            is_in_progress=profile.is_in_progress,
+            budget=rebalance_resp.allocations,
+            created_at=profile.created_at,
+            updated_at=now,
+        )
+        await self.store.update(event_id, updated_profile)
+        logger.info(
+            "Rebalanced event profile %s budget to INR %d",
+            event_id,
+            new_total_budget_inr,
+        )
+        return rebalance_resp
+

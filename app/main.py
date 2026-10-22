@@ -24,6 +24,8 @@ from app.schemas import (
     BudgetRebalanceRequest,
     BudgetRebalanceResponse,
     DataStatusResponse,
+    EventBudgetPlanResponse,
+    EventBudgetRebalanceRequest,
     EventCreateRequest,
     EventListResponse,
     EventPlanRequest,
@@ -519,6 +521,56 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             limit=limit,
             events=events,
         )
+
+    @app.get(
+        "/api/v1/events/{event_id}/budget",
+        response_model=EventBudgetPlanResponse,
+        responses={
+            404: {"model": StandardErrorResponse, "description": "Event profile not found"},
+        },
+        tags=["Budget", "Events"],
+        summary="Retrieve event-specific deterministic budget plan with warnings and explanation",
+    )
+    async def get_event_budget(
+        event_id: str,
+        service: EventService = Depends(get_event_service),
+    ) -> EventBudgetPlanResponse:
+        """Retrieve the deterministic 8-category budget plan for a saved event profile."""
+        plan = await service.get_event_budget_plan(event_id)
+        if plan is None:
+            raise StarletteHTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Event profile '{event_id}' not found.",
+            )
+        return plan
+
+    @app.post(
+        "/api/v1/events/{event_id}/budget/rebalance",
+        response_model=BudgetRebalanceResponse,
+        responses={
+            404: {"model": StandardErrorResponse, "description": "Event profile not found"},
+            422: {"model": StandardErrorResponse, "description": "Validation or constraint error"},
+        },
+        tags=["Budget", "Events"],
+        summary="Rebalance a saved event profile's budget protecting essentials",
+    )
+    async def rebalance_event_budget_endpoint(
+        event_id: str,
+        request_data: EventBudgetRebalanceRequest,
+        service: EventService = Depends(get_event_service),
+    ) -> BudgetRebalanceResponse:
+        """Rebalance the budget of a saved event profile and persist the updated allocations."""
+        result = await service.rebalance_event_budget(
+            event_id=event_id,
+            new_total_budget_inr=request_data.new_total_budget_inr,
+            strict_protect=request_data.strict_protect,
+        )
+        if result is None:
+            raise StarletteHTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Event profile '{event_id}' not found.",
+            )
+        return result
 
     @app.get(
         "/api/v1/ai/status",
