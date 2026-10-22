@@ -4,6 +4,7 @@ import logging
 import re
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from datetime import date
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Query, Request, Response, status
@@ -28,12 +29,15 @@ from app.schemas import (
     EventBudgetRebalanceRequest,
     EventCreateRequest,
     EventListResponse,
+    EventMilestone,
     EventPlanRequest,
     EventProfile,
     EventTimelineResponse,
+    EventTimelineScheduleResponse,
     EventUpdateRequest,
     EventValidationResponse,
     HealthResponse,
+    MilestoneStatusUpdateRequest,
     PreMortemRisk,
     StandardErrorResponse,
 )
@@ -571,6 +575,78 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 detail=f"Event profile '{event_id}' not found.",
             )
         return result
+
+    @app.get(
+        "/api/v1/events/{event_id}/timeline",
+        response_model=EventTimelineScheduleResponse,
+        responses={
+            404: {"model": StandardErrorResponse, "description": "Event profile not found"},
+        },
+        tags=["Timeline", "Events"],
+        summary="Retrieve deterministic timeline and milestone schedule for a saved event",
+    )
+    async def get_event_timeline(
+        event_id: str,
+        reference_date: date | None = Query(
+            default=None,
+            description="Simulated reference date for deterministic deadline calculations (defaults to IST current date)",
+        ),
+        service: EventService = Depends(get_event_service),
+    ) -> EventTimelineScheduleResponse:
+        """Retrieve deterministic timeline with milestones and deadline calculations for an event."""
+        timeline = await service.get_event_timeline(event_id, reference_date=reference_date)
+        if timeline is None:
+            raise StarletteHTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Event profile '{event_id}' not found.",
+            )
+        return timeline
+
+    @app.patch(
+        "/api/v1/events/{event_id}/timeline/milestones/{milestone_id}",
+        response_model=EventMilestone,
+        responses={
+            404: {"model": StandardErrorResponse, "description": "Event or milestone not found"},
+            422: {"model": StandardErrorResponse, "description": "Validation or date constraint error"},
+        },
+        tags=["Timeline", "Events"],
+        summary="Update completion status of a timeline milestone",
+    )
+    async def update_milestone_status(
+        event_id: str,
+        milestone_id: str,
+        request_data: MilestoneStatusUpdateRequest,
+        reference_date: date | None = Query(
+            default=None,
+            description="Simulated reference date for deterministic deadline calculations (defaults to IST current date)",
+        ),
+        service: EventService = Depends(get_event_service),
+    ) -> EventMilestone:
+        """Update a milestone's completion status (pending or completed) in ephemeral memory."""
+        try:
+            milestone = await service.update_milestone_status(
+                event_id=event_id,
+                milestone_id=milestone_id,
+                status=request_data.status,
+                reference_date=reference_date,
+            )
+        except KeyError as exc:
+            raise StarletteHTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=str(exc).strip("'"),
+            ) from exc
+        except ValueError as exc:
+            raise StarletteHTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=str(exc),
+            ) from exc
+
+        if milestone is None:
+            raise StarletteHTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Event profile '{event_id}' not found.",
+            )
+        return milestone
 
     @app.get(
         "/api/v1/ai/status",

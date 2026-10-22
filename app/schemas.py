@@ -10,7 +10,7 @@ Defines:
 
 import math
 import re
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from enum import StrEnum
 from typing import Any, Generic, Literal, TypeVar
 from zoneinfo import ZoneInfo
@@ -70,6 +70,33 @@ class BookingStatus(StrEnum):
     SHORTLISTED = "shortlisted"
     BOOKED = "booked"
     NOT_NEEDED = "not_needed"
+
+
+class MilestoneCategory(StrEnum):
+    """Controlled functional category for timeline milestones."""
+
+    VENUE = "venue"
+    CATERING = "catering"
+    DECOR = "decor"
+    INVITATIONS = "invitations"
+    LOGISTICS = "logistics"
+    FINAL_CHECKS = "final_checks"
+
+
+class MilestonePriority(StrEnum):
+    """Task urgency level."""
+
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+
+
+class MilestoneStatus(StrEnum):
+    """Milestone execution status."""
+
+    PENDING = "pending"
+    COMPLETED = "completed"
+
 
 
 # ==============================================================================
@@ -621,6 +648,9 @@ class EventProfile(BaseModel):
     budget: EventBudgetBreakdown | None = Field(
         default=None, description="Deterministic 8-category budget allocation"
     )
+    milestone_statuses: dict[str, MilestoneStatus] = Field(
+        default_factory=dict, description="Completion status overrides for timeline milestones"
+    )
     created_at: datetime = Field(..., description="Server creation timestamp (UTC)")
     updated_at: datetime = Field(..., description="Server last modification timestamp (UTC)")
 
@@ -719,6 +749,97 @@ class EventBudgetRebalanceRequest(BaseModel):
     @classmethod
     def validate_budget(cls, value: Any) -> int:
         return validate_strict_budget_inr_value(value)
+
+
+class EventMilestone(BaseModel):
+    """Individual planning milestone with deadline and status."""
+
+    milestone_id: str = Field(
+        ..., min_length=1, max_length=50, description="Stable milestone identifier"
+    )
+    title: str = Field(
+        ..., min_length=1, max_length=150, description="Short task name"
+    )
+    description: str = Field(
+        ..., min_length=1, max_length=500, description="Concise explanation"
+    )
+    category: MilestoneCategory = Field(
+        ..., description="Controlled milestone functional category"
+    )
+    due_date: date = Field(
+        ..., description="Target completion calendar date (ISO 8601)"
+    )
+    days_before_event: int = Field(
+        ..., ge=0, description="Lead time in days before the event date"
+    )
+    priority: MilestonePriority = Field(
+        default=MilestonePriority.MEDIUM, description="Task urgency level"
+    )
+    status: MilestoneStatus = Field(
+        default=MilestoneStatus.PENDING, description="Completion status"
+    )
+    is_overdue: bool = Field(
+        default=False, description="Whether milestone is past due relative to reference date"
+    )
+
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+
+class EventTimelineScheduleResponse(BaseModel):
+    """Deterministic timeline and milestone schedule for a saved event profile."""
+
+    event_id: str = Field(..., description="Server-generated event identifier")
+    event_date: date | None = Field(default=None, description="Event scheduled calendar date")
+    generated_at: datetime = Field(..., description="Server generation timestamp in UTC")
+    milestones: list[EventMilestone] = Field(
+        default_factory=list, description="Chronologically sorted milestone checklist"
+    )
+    warnings: list[str] = Field(
+        default_factory=list, description="Schedule warnings or date alerts"
+    )
+
+    model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def validate_milestones_integrity(self) -> "EventTimelineScheduleResponse":
+        # 1. Prevent duplicate milestone IDs
+        ids = [m.milestone_id for m in self.milestones]
+        if len(ids) != len(set(ids)):
+            duplicates = [mid for mid in ids if ids.count(mid) > 1]
+            raise ValueError(f"Duplicate milestone identifiers found: {set(duplicates)}")
+
+        # 2. If event_date is present, verify due_date == event_date - timedelta(days=days_before_event)
+        if self.event_date:
+            for m in self.milestones:
+                expected_due = self.event_date - timedelta(days=m.days_before_event)
+                if m.due_date != expected_due:
+                    raise ValueError(
+                        f"Milestone '{m.milestone_id}' due_date {m.due_date} does not match "
+                        f"event_date ({self.event_date}) - {m.days_before_event} days ({expected_due})"
+                    )
+
+        # 3. Verify chronological sorting (earliest due_date first; ties broken by milestone_id)
+        for i in range(len(self.milestones) - 1):
+            if (self.milestones[i].due_date, self.milestones[i].milestone_id) > (
+                self.milestones[i + 1].due_date,
+                self.milestones[i + 1].milestone_id,
+            ):
+                raise ValueError(
+                    f"Milestones are not sorted chronologically: "
+                    f"'{self.milestones[i].milestone_id}' ({self.milestones[i].due_date}) comes before "
+                    f"'{self.milestones[i + 1].milestone_id}' ({self.milestones[i + 1].due_date})"
+                )
+        return self
+
+
+class MilestoneStatusUpdateRequest(BaseModel):
+    """Request payload to update milestone completion status."""
+
+    status: MilestoneStatus = Field(
+        ..., description="New milestone completion status (pending or completed)"
+    )
+
+    model_config = ConfigDict(extra="forbid")
 
 
 

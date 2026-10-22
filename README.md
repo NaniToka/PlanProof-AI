@@ -120,6 +120,8 @@ PlanProof AI supports three explicit AI operation modes controlled by the `AI_MO
 | `GET` | `/api/v1/events` | List active event profiles with pagination |
 | `GET` | `/api/v1/events/{event_id}/budget` | Retrieve event-specific deterministic budget plan with warnings & explanation |
 | `POST` | `/api/v1/events/{event_id}/budget/rebalance` | Rebalance saved event's budget preserving essential categories |
+| `GET` | `/api/v1/events/{event_id}/timeline` | Retrieve deterministic timeline and milestone checklist with calendar deadlines |
+| `PATCH` | `/api/v1/events/{event_id}/timeline/milestones/{milestone_id}` | Update milestone completion status (`pending` or `completed`) |
 | `POST` | `/api/v1/validate-event` | Strict domain validation for event planning requests |
 | `POST` | `/api/v1/budget/calculate` | Deterministic 8-category budget allocation (Hamilton-Hare method) |
 | `POST` | `/api/v1/budget/rebalance` | Budget rebalancing with essential category preservation |
@@ -208,6 +210,92 @@ Every event budget is divided across 8 canonical categories:
 
 ---
 
+## Event Timeline & Milestone Scheduling
+
+PlanProof AI generates structured, deterministic milestone checklists and date schedules tailored to the saved event profile, event type, and calendar date.
+
+### Core Rule: Deterministic Date Calculations
+Date calculations, lead times, and deadline ordering are computed strictly via Python calendar-date arithmetic (`event_date - timedelta(days=days_before_event)`). Gemini or other LLMs are **never** permitted to decide date calculations or orderings.
+
+### 1. Supported Event Types & Templates
+Curated, general-purpose milestone templates are implemented for all supported celebration types:
+- **Wedding (`wedding`)**: 9 sequential milestones spanning 180 days down to 2 days before the event (venue booking, core vendor lock-in, invitations, decor, guest lodging, menu tasting, accessibility review, final day-of checklist).
+- **Birthday (`birthday`)**: 7 focused milestones spanning 30 days down to 1 day before the event (party hall reservation, theme invitations, custom cake ordering, balloon decor, headcount confirmation, return gifts).
+- **Community Event (`community_event`)**: 8 milestones spanning 60 days down to 1 day before the event (committee scope, municipal and sound permissions, PA & backup generator rental, notices, volunteer teams, water and catering prasad, crowd safety and fire checks).
+
+### 2. Milestone Attributes & Fields
+Each milestone in the schedule contains:
+- `milestone_id`: Stable identifier with category prefix (`M-WED-01` through `M-WED-09`, `M-BDY-01` through `M-BDY-07`, `M-COM-01` through `M-COM-08`).
+- `title`: Short task name.
+- `description`: Actionable task instructions.
+- `category`: Functional domain category (`venue`, `catering`, `decor`, `invitations`, `logistics`, `final_checks`).
+- `due_date`: Calendar date in ISO 8601 format (`YYYY-MM-DD`).
+- `days_before_event`: Non-negative integer days before the event.
+- `priority`: Controlled urgency level (`high`, `medium`, `low`).
+- `status`: Completion status (`pending` or `completed`).
+- `is_overdue`: Derived Boolean status indicating whether the deadline is in the past relative to the current calendar date (IST). Completed milestones are never marked overdue.
+
+### 3. Date Arithmetic & Edge Case Handling
+- **Leap Years & Boundaries:** Standard library `datetime.date` arithmetic accurately navigates leap years (e.g. February 29) and transitions across month and year boundaries without floating-point or timezone drift.
+- **Timezone Convention:** Evaluated against Indian Standard Time (Asia/Kolkata, UTC+05:30) calendar date boundaries.
+- **Missing Event Date:** If an event profile does not have an `event_date`, `GET /timeline` returns HTTP `200` with `milestones: []` and an advisory message explaining that an event date must first be supplied via `PATCH /api/v1/events/{event_id}`. Dates are never fabricated.
+- **Compressed Preparation Window:** If an event is scheduled too soon for the standard template lead times, all milestones are retained in their original sequence. Deadlines that have already passed are flagged with `is_overdue: true` and appropriate schedule compression warnings are returned.
+
+### 4. Milestone Completion Updates
+- Milestone completion status can be toggled via `PATCH /api/v1/events/{event_id}/timeline/milestones/{milestone_id}`.
+- Payload: `{"status": "completed"}` or `{"status": "pending"}`.
+- Clients cannot modify calculated deadlines or identifiers.
+- State is preserved in memory across profile updates and budget rebalancing, but is reset upon application process restart (ephemeral in-memory store limitation).
+
+### 5. Sample Timeline Response
+
+```json
+{
+  "event_id": "EV-35D19DF60424",
+  "event_date": "2027-11-20",
+  "generated_at": "2026-10-22T16:45:00Z",
+  "milestones": [
+    {
+      "milestone_id": "M-WED-01",
+      "title": "Set wedding budget & initial guest estimate",
+      "description": "Establish total budget allocations in INR and draft the preliminary family guest headcount.",
+      "category": "logistics",
+      "due_date": "2027-05-24",
+      "days_before_event": 180,
+      "priority": "high",
+      "status": "pending",
+      "is_overdue": false
+    },
+    {
+      "milestone_id": "M-WED-02",
+      "title": "Shortlist and book wedding venue / mandap",
+      "description": "Inspect banquet halls or outdoor lawns, verify booking advances, and reserve auspicious dates.",
+      "category": "venue",
+      "due_date": "2027-06-23",
+      "days_before_event": 150,
+      "priority": "high",
+      "status": "completed",
+      "is_overdue": false
+    },
+    {
+      "milestone_id": "M-WED-09",
+      "title": "Complete final rehearsal, vendor contacts & day-of checklist",
+      "description": "Verify remaining cash/NEFT balances for vendors, brief the family council, and print run-sheets.",
+      "category": "final_checks",
+      "due_date": "2027-11-18",
+      "days_before_event": 2,
+      "priority": "high",
+      "status": "pending",
+      "is_overdue": false
+    }
+  ],
+  "warnings": []
+}
+```
+
+---
+
 ## License
 
 This project is licensed under the [MIT License](LICENSE).
+

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from uuid import uuid4
 
 from app.config import Settings, get_settings
@@ -27,8 +27,12 @@ from app.schemas import (
     BudgetRebalanceResponse,
     EventBudgetPlanResponse,
     EventCreateRequest,
+    EventMilestone,
     EventProfile,
+    EventTimelineScheduleResponse,
     EventUpdateRequest,
+    MilestoneStatus,
+    get_current_ist_date,
     validate_event_date,
 )
 from app.services.budget import (
@@ -36,6 +40,10 @@ from app.services.budget import (
     compute_budget_warnings,
     generate_budget_explanation,
     rebalance_budget,
+)
+from app.services.timeline import (
+    generate_event_timeline_schedule,
+    get_template_for_event_type,
 )
 
 logger = logging.getLogger(__name__)
@@ -251,6 +259,7 @@ class EventService:
             theme_notes=update_data.get("theme_notes", existing.theme_notes),
             is_in_progress=new_in_progress,
             budget=new_budget,
+            milestone_statuses=dict(existing.milestone_statuses),
             created_at=existing.created_at,  # Immutable
             updated_at=now,  # Updated timestamp
         )
@@ -368,6 +377,7 @@ class EventService:
             theme_notes=profile.theme_notes,
             is_in_progress=profile.is_in_progress,
             budget=rebalance_resp.allocations,
+            milestone_statuses=dict(profile.milestone_statuses),
             created_at=profile.created_at,
             updated_at=now,
         )
@@ -378,4 +388,121 @@ class EventService:
             new_total_budget_inr,
         )
         return rebalance_resp
+
+    async def get_event_timeline(
+        self,
+        event_id: str,
+        reference_date: date | None = None,
+    ) -> EventTimelineScheduleResponse | None:
+        """Generate and retrieve the deterministic timeline for a saved event profile.
+
+        Args:
+            event_id: Unique event identifier.
+            reference_date: Optional simulated 'today' for testing.
+
+        Returns:
+            EventTimelineScheduleResponse if event exists, None otherwise.
+        """
+        profile = await self.store.get(event_id)
+        if profile is None:
+            return None
+
+        return generate_event_timeline_schedule(
+            event_id=profile.event_id,
+            event_type=profile.event_type,
+            event_date=profile.event_date,
+            milestone_statuses=profile.milestone_statuses,
+            reference_date=reference_date,
+        )
+
+    async def update_milestone_status(
+        self,
+        event_id: str,
+        milestone_id: str,
+        status: MilestoneStatus,
+        reference_date: date | None = None,
+    ) -> EventMilestone | None:
+        """Update completion status of a timeline milestone in ephemeral storage.
+
+        Args:
+            event_id: Unique event identifier.
+            milestone_id: Milestone identifier (must belong to event type template).
+            status: New status (pending or completed).
+            reference_date: Optional simulated reference date for testing.
+
+        Returns:
+            Updated EventMilestone, or None if event not found.
+
+        Raises:
+            ValueError: If event_date is missing on profile.
+            KeyError: If milestone_id does not exist in template for event type.
+        """
+        profile = await self.store.get(event_id)
+        if profile is None:
+            return None
+
+        if profile.event_date is None:
+            raise ValueError(
+                f"Cannot update milestone status for event '{event_id}' because event_date is not set. "
+                f"Set an event_date first via PATCH /api/v1/events/{event_id}."
+            )
+
+        template_items = get_template_for_event_type(profile.event_type)
+        matching_item = next(
+            (item for item in template_items if item.milestone_id == milestone_id),
+            None,
+        )
+        if matching_item is None:
+            raise KeyError(
+                f"Milestone '{milestone_id}' is not a valid milestone for {profile.event_type.value}."
+            )
+
+        # Update the milestone status mapping
+        updated_statuses = dict(profile.milestone_statuses)
+        updated_statuses[milestone_id] = status
+
+        now = datetime.now(timezone.utc)
+        updated_profile = EventProfile(
+            event_id=profile.event_id,
+            event_type=profile.event_type,
+            event_name=profile.event_name,
+            city=profile.city,
+            city_tier=profile.city_tier,
+            event_date=profile.event_date,
+            guest_count=profile.guest_count,
+            total_budget_inr=profile.total_budget_inr,
+            language=profile.language,
+            theme_notes=profile.theme_notes,
+            is_in_progress=profile.is_in_progress,
+            budget=profile.budget,
+            milestone_statuses=updated_statuses,
+            created_at=profile.created_at,
+            updated_at=now,
+        )
+        await self.store.update(event_id, updated_profile)
+
+        # Build and return the updated milestone object
+        ref_date = reference_date or get_current_ist_date()
+        due_date = profile.event_date - timedelta(days=matching_item.days_before_event)
+        is_overdue = (due_date < ref_date) and (status != MilestoneStatus.COMPLETED)
+
+        logger.info(
+            "Updated milestone %s status to %s for event %s",
+            milestone_id,
+            status.value,
+            event_id,
+        )
+
+        return EventMilestone(
+            milestone_id=matching_item.milestone_id,
+            title=matching_item.title,
+            description=matching_item.description,
+            category=matching_item.category,
+            due_date=due_date,
+            days_before_event=matching_item.days_before_event,
+            priority=matching_item.priority,
+            status=status,
+            is_overdue=is_overdue,
+        )
+
 

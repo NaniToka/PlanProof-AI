@@ -39,6 +39,13 @@ from app.services.gemini_service import (
     GeminiService,
     GeminiTimeoutError,
 )
+from app.services.timeline import (
+    BIRTHDAY_TIMELINE_TEMPLATE,
+    COMMUNITY_EVENT_TIMELINE_TEMPLATE,
+    WEDDING_TIMELINE_TEMPLATE,
+    generate_event_timeline_schedule,
+    get_template_for_event_type,
+)
 
 __all__ = [
     "AIOrchestrator",
@@ -56,6 +63,11 @@ __all__ = [
     "generate_deterministic_family_council",
     "generate_deterministic_risks",
     "generate_deterministic_timeline",
+    "generate_event_timeline_schedule",
+    "get_template_for_event_type",
+    "WEDDING_TIMELINE_TEMPLATE",
+    "BIRTHDAY_TIMELINE_TEMPLATE",
+    "COMMUNITY_EVENT_TIMELINE_TEMPLATE",
     "BudgetConstraintError",
     "BudgetEngineError",
     "BudgetValidationError",
@@ -71,3 +83,4 @@ __all__ = [
     "GeminiService",
     "GeminiTimeoutError",
 ]
+
