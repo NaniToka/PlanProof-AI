@@ -13,20 +13,25 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.config import ConfigurationError, Settings, get_settings
+from app.config import AIMode, ConfigurationError, Settings, get_settings
 from app.data_loader import DataLoaderError, DatasetRepository
 from app.schemas import (
+    AIResultEnvelope,
     AIStatusResponse,
+    AITask,
     BudgetCalculateRequest,
     BudgetCalculationResponse,
     BudgetRebalanceRequest,
     BudgetRebalanceResponse,
     DataStatusResponse,
     EventPlanRequest,
+    EventTimelineResponse,
     EventValidationResponse,
     HealthResponse,
+    PreMortemRisk,
     StandardErrorResponse,
 )
+from app.services.ai_orchestrator import AIOrchestrator
 from app.services.budget import (
     BudgetEngineError,
     calculate_initial_budget,
@@ -51,7 +56,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-        """Load datasets into application state at startup."""
+        """Validate configuration, initialize services and load datasets at startup."""
+        # 1. Validate configured AI_MODE at startup
+        if app_settings.ai_mode not in (AIMode.AUTO, AIMode.DEMO, AIMode.GEMINI):
+            raise ConfigurationError(f"Unsupported AI_MODE: '{app_settings.ai_mode}'")
+        logger.info("Initializing PlanProof AI in AI_MODE=%s", app_settings.ai_mode.value)
+
+        # 2. Load datasets
         repo = DatasetRepository()
         logger.info(
             "Initializing datasets from %s, %s, %s",
@@ -66,7 +77,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         app.state.dataset_repo = repo
         app.state.settings = app_settings
-        app.state.gemini_service = GeminiService(settings=app_settings)
+
+        # 3. Initialize AI services
+        gemini_svc = GeminiService(settings=app_settings)
+        app.state.gemini_service = gemini_svc
+        app.state.ai_orchestrator = AIOrchestrator(
+            settings=app_settings, gemini_service=gemini_svc
+        )
         yield
 
     app = FastAPI(
@@ -76,7 +93,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     app.state.settings = app_settings
-    app.state.gemini_service = GeminiService(settings=app_settings)
+    gemini_svc_init = GeminiService(settings=app_settings)
+    app.state.gemini_service = gemini_svc_init
+    app.state.ai_orchestrator = AIOrchestrator(
+        settings=app_settings, gemini_service=gemini_svc_init
+    )
     if settings is not None:
         app.dependency_overrides[get_settings] = lambda: app_settings
 
@@ -350,6 +371,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             content=repo.get_status_summary().model_dump(),
         )
 
+    def get_ai_orchestrator(
+        request: Request,
+        current_settings: Settings = Depends(get_settings),
+    ) -> AIOrchestrator:
+        """Dependency resolving application-level AI orchestrator."""
+        orchestrator: AIOrchestrator | None = getattr(request.app.state, "ai_orchestrator", None)
+        if orchestrator is None:
+            active_settings = getattr(request.app.state, "settings", current_settings)
+            svc = getattr(request.app.state, "gemini_service", None) or GeminiService(
+                settings=active_settings
+            )
+            orchestrator = AIOrchestrator(settings=active_settings, gemini_service=svc)
+            request.app.state.ai_orchestrator = orchestrator
+        return orchestrator
+
     @app.get(
         "/api/v1/ai/status",
         response_model=AIStatusResponse,
@@ -364,11 +400,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         active_settings = getattr(request.app.state, "settings", current_settings)
         svc: GeminiService | None = getattr(request.app.state, "gemini_service", None)
         is_configured = svc.is_configured if svc else bool(active_settings.gemini_api_key)
+        active_mode = getattr(active_settings, "ai_mode", AIMode.AUTO)
+        mode_val = active_mode.value if isinstance(active_mode, AIMode) else str(active_mode)
         return AIStatusResponse(
             configured=is_configured,
             model=active_settings.gemini_model,
             timeout_seconds=active_settings.gemini_timeout_seconds,
             max_retries=active_settings.gemini_max_retries,
+            mode=mode_val,
         )
 
     @app.post(
@@ -385,6 +424,52 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             valid=True,
             message="Event plan request validated successfully.",
             validated_request=request_data,
+        )
+
+    @app.post(
+        "/api/v1/plan/timeline",
+        response_model=AIResultEnvelope[EventTimelineResponse],
+        tags=["Planning"],
+        summary="Generate event timeline and run-sheet via AI orchestration with deterministic fallback",
+    )
+    async def generate_timeline(
+        plan_request: EventPlanRequest,
+        orchestrator: AIOrchestrator = Depends(get_ai_orchestrator),
+    ) -> AIResultEnvelope[EventTimelineResponse]:
+        """Generate event planning milestones and day-of run-sheet with fallback support."""
+        prompt = (
+            f"Generate a detailed planning checklist and day-of run-sheet for a {plan_request.event_type.value} "
+            f"in {plan_request.city} ({plan_request.city_tier.value} tier) for {plan_request.guest_count} guests "
+            f"with total budget INR {plan_request.total_budget_inr:,}. Preferred language: {plan_request.language.value}. "
+            f"Theme notes: {plan_request.theme_notes}."
+        )
+        return await orchestrator.orchestrate(
+            task=AITask.EVENT_TIMELINE,
+            response_schema=EventTimelineResponse,
+            prompt=prompt,
+            request_data=plan_request,
+        )
+
+    @app.post(
+        "/api/v1/plan/risks",
+        response_model=AIResultEnvelope[list[PreMortemRisk]],
+        tags=["Planning"],
+        summary="Assess event risks via AI orchestration with deterministic fallback",
+    )
+    async def generate_risks(
+        plan_request: EventPlanRequest,
+        orchestrator: AIOrchestrator = Depends(get_ai_orchestrator),
+    ) -> AIResultEnvelope[list[PreMortemRisk]]:
+        """Generate pre-mortem risk assessment with probabilities and concrete mitigations."""
+        prompt = (
+            f"Assess pre-mortem risks for a {plan_request.event_type.value} in {plan_request.city} "
+            f"with {plan_request.guest_count} guests and budget INR {plan_request.total_budget_inr:,}."
+        )
+        return await orchestrator.orchestrate(
+            task=AITask.EVENT_RISKS,
+            response_schema=list[PreMortemRisk],
+            prompt=prompt,
+            request_data=plan_request,
         )
 
     @app.post(

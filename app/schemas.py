@@ -12,7 +12,7 @@ import math
 import re
 from datetime import date
 from enum import StrEnum
-from typing import Any
+from typing import Any, Generic, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -786,3 +786,96 @@ class AIStatusResponse(BaseModel):
     model: str = Field(..., description="Configured Gemini model identifier")
     timeout_seconds: float = Field(..., description="Configured request timeout in seconds")
     max_retries: int = Field(..., description="Configured maximum retries for transient failures")
+    mode: str = Field(default="auto", description="Configured AI operation mode: auto, demo, gemini")
+
+
+# ==============================================================================
+# 7. AI Operation & Fallback Result Envelopes
+# ==============================================================================
+
+DataT = TypeVar("DataT")
+
+
+class AIResultStatus(StrEnum):
+    """Operation outcome status for AI-dependent tasks."""
+
+    SUCCESS = "success"
+    FALLBACK = "fallback"
+    UNAVAILABLE = "unavailable"
+
+
+class AIResultSource(StrEnum):
+    """Provenance source of the result payload."""
+
+    GEMINI = "gemini"
+    DETERMINISTIC = "deterministic"
+    DEMO = "demo"
+
+
+class AITask(StrEnum):
+    """Standardized task classifications for AI orchestration."""
+
+    EVENT_TIMELINE = "event_timeline"
+    EVENT_RISKS = "event_risks"
+    CRISIS_RECOVERY = "crisis_recovery"
+    FAMILY_COUNCIL = "family_council"
+    PERSONALIZED_IDEAS = "personalized_ideas"
+    FULL_EVENT_PLAN = "full_event_plan"
+
+
+def sanitize_safe_text(text: str) -> str:
+    """Sanitize text to strip absolute filesystem paths and protect system information."""
+    if not text:
+        return text
+    # Strip absolute Unix (/Users/... or /home/...) and Windows (C:\...) paths
+    cleaned = re.sub(r"(/[a-zA-Z0-9_\.\-]+)+/([a-zA-Z0-9_\.\-]+)", r"\2", text)
+    cleaned = re.sub(r"([a-zA-Z]:\\[a-zA-Z0-9_\.\-\\]+)\\([a-zA-Z0-9_\.\-]+)", r"\2", cleaned)
+    return cleaned
+
+
+class AIResultEnvelope(BaseModel, Generic[DataT]):
+    """Standardized response envelope for AI-dependent operations."""
+
+    status: AIResultStatus = Field(
+        ..., description="Operation outcome status: success, fallback, or unavailable"
+    )
+    source: AIResultSource = Field(
+        ..., description="Result source provenance: gemini, deterministic, or demo"
+    )
+    data: DataT | None = Field(
+        default=None, description="Validated feature-specific result payload"
+    )
+    message: str | None = Field(
+        default=None, description="Optional user-safe explanation"
+    )
+    warnings: list[str] = Field(
+        default_factory=list, description="Non-sensitive operational warnings"
+    )
+
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    @field_validator("message")
+    @classmethod
+    def sanitize_envelope_message(cls, value: str | None) -> str | None:
+        """Sanitize message to eliminate absolute filesystem paths."""
+        return sanitize_safe_text(value) if value else value
+
+    @field_validator("warnings")
+    @classmethod
+    def sanitize_envelope_warnings(cls, warnings: list[str]) -> list[str]:
+        """Sanitize warnings list to prevent path or token leakage."""
+        return [sanitize_safe_text(w) for w in warnings if w and w.strip()]
+
+    @model_validator(mode="after")
+    def validate_envelope_integrity(self) -> "AIResultEnvelope[DataT]":
+        """Enforce envelope consistency between status, source, and payload presence."""
+        if self.status in (AIResultStatus.SUCCESS, AIResultStatus.FALLBACK) and self.data is None:
+            raise ValueError(
+                f"Result envelope data cannot be None when status is '{self.status.value}'"
+            )
+        if self.status == AIResultStatus.UNAVAILABLE and self.data is not None:
+            raise ValueError(
+                f"Result envelope data must be None when status is '{self.status.value}'"
+            )
+        return self
+

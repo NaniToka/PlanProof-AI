@@ -96,13 +96,29 @@ Open [http://localhost:8000](http://localhost:8000) in your browser to view the 
 
 ---
 
-## API Endpoints (Milestone 1)
+## AI Operation Modes (`AI_MODE`)
+
+PlanProof AI supports three explicit AI operation modes controlled by the `AI_MODE` environment variable:
+
+- **`auto` (default)**: Uses Google Gemini AI when configured and available; automatically switches to feature-specific deterministic fallbacks when offline or unconfigured.
+- **`demo`**: Never makes live calls to Gemini; returns deterministic, synthetic illustrative demonstration fixtures with clear disclaimers.
+- **`gemini`**: Strictly requires Gemini AI for AI-dependent operations; returns controlled errors (`AI_NOT_CONFIGURED` or `AIResultStatus.UNAVAILABLE`) when unconfigured or failing. Never silently falls back.
+
+---
+
+## API Endpoints
 
 | Method | Endpoint | Description |
 | :--- | :--- | :--- |
 | `GET` | `/` | Responsive system dashboard |
 | `GET` | `/health` | Application liveness and version check |
 | `GET` | `/api/v1/data-status` | Safe metadata regarding loaded crisis scenarios & catalogs |
+| `GET` | `/api/v1/ai/status` | Gemini AI integration configuration and operation mode status |
+| `POST` | `/api/v1/validate-event` | Strict domain validation for event planning requests |
+| `POST` | `/api/v1/budget/calculate` | Deterministic 8-category budget allocation (Hamilton-Hare method) |
+| `POST` | `/api/v1/budget/rebalance` | Budget rebalancing with essential category preservation |
+| `POST` | `/api/v1/plan/timeline` | AI-orchestrated event planning checklist and run-sheet with fallback |
+| `POST` | `/api/v1/plan/risks` | AI-orchestrated pre-mortem risk assessment with deterministic fallback |
 | `GET` | `/docs` | OpenAPI / Swagger interactive documentation |
 
 ---

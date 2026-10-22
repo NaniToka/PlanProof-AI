@@ -1,6 +1,7 @@
 """Application configuration for PlanProof AI using Pydantic Settings."""
 
 import json
+from enum import StrEnum
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,20 @@ class ConfigurationError(Exception):
     """Raised when an application setting or feature configuration is invalid or missing."""
 
 
+class AIMode(StrEnum):
+    """Supported operational modes for AI-dependent capabilities.
+
+    Modes:
+    - auto: Use Gemini when configured and available; otherwise use permitted deterministic fallbacks.
+    - demo: Do not call Gemini; use deterministic demo content only.
+    - gemini: Require Gemini for AI-dependent operations and return a clear, controlled error when unconfigured.
+    """
+
+    AUTO = "auto"
+    DEMO = "demo"
+    GEMINI = "gemini"
+
+
 class Settings(BaseSettings):
     """Application settings loaded from environment variables and optional .env file."""
 
@@ -25,6 +40,15 @@ class Settings(BaseSettings):
     version: str = Field(default="0.1.0", description="Application semantic version")
     app_host: str = Field(default="0.0.0.0", description="HTTP server bind host")
     app_port: int = Field(default=8000, ge=1, le=65535, description="HTTP server bind port")
+
+    # AI Operation Mode
+    ai_mode: AIMode = Field(
+        default=AIMode.AUTO,
+        description=(
+            "AI operation mode: 'auto' (use Gemini if available else deterministic fallback), "
+            "'demo' (deterministic demo fixtures only), or 'gemini' (strict Gemini required)"
+        ),
+    )
 
     # Google Gemini API configuration
     # Note: Verify exact current model identifier in Google AI Studio (e.g. gemini-2.5-flash)
@@ -114,6 +138,23 @@ class Settings(BaseSettings):
     def get_gemini_api_key_value(self) -> str | None:
         """Safely expose the raw API key without leaking it in repr/str."""
         return self.gemini_api_key.get_secret_value() if self.gemini_api_key else None
+
+    @field_validator("ai_mode", mode="before")
+    @classmethod
+    def validate_ai_mode(cls, value: Any) -> AIMode:
+        """Validate and normalize AI operation mode ('auto', 'demo', 'gemini')."""
+        if isinstance(value, AIMode):
+            return value
+        if isinstance(value, str):
+            cleaned = value.strip().lower()
+            try:
+                return AIMode(cleaned)
+            except ValueError:
+                valid_modes = [m.value for m in AIMode]
+                raise ValueError(
+                    f"Invalid AI_MODE '{value}'. Must be one of: {', '.join(valid_modes)}"
+                )
+        raise ValueError(f"Invalid AI_MODE '{value}'. Must be a string")
 
     @field_validator("allowed_cors_origins")
     @classmethod
