@@ -124,6 +124,7 @@ PlanProof AI supports three explicit AI operation modes controlled by the `AI_MO
 | `PATCH` | `/api/v1/events/{event_id}/timeline/milestones/{milestone_id}` | Update milestone completion status (`pending` or `completed`) |
 | `GET` | `/api/v1/events/{event_id}/vendors/checklist` | Retrieve event-specific vendor checklist and coordination status summary |
 | `PATCH` | `/api/v1/events/{event_id}/vendors/checklist/{item_id}` | Update task status, notes, priority, vendor name, or booking status |
+| `GET` | `/api/v1/events/{event_id}/ideas` | Retrieve personalized, budget-aware recommendations with AI orchestration and fallback |
 | `POST` | `/api/v1/validate-event` | Strict domain validation for event planning requests |
 | `POST` | `/api/v1/budget/calculate` | Deterministic 8-category budget allocation (Hamilton-Hare method) |
 | `POST` | `/api/v1/budget/rebalance` | Budget rebalancing with essential category preservation |
@@ -423,6 +424,105 @@ Updates permitted fields on an individual checklist item.
       "updated_at": "2026-10-22T17:00:00Z"
     }
   ],
+  "warnings": []
+}
+```
+
+---
+
+## Personalized Event Ideas & Recommendations
+
+PlanProof AI generates personalized, culturally grounded, budget-aware creative recommendations for weddings, birthdays, and community celebrations.
+
+> [!IMPORTANT]
+> **Advisory Inspiration Disclaimer:**
+> Recommendations, qualitative cost levels (`low`, `medium`, `high`, `unknown`), and budget-fit ratings (`fits`, `possible_with_adjustments`, `unknown`) are relative qualitative planning estimates for creative inspiration. They do **not** constitute real vendor discovery, verified quotes, discounts, or guaranteed prices. Gemini or any external model is **never** permitted to calculate authoritative budget arithmetic.
+
+### 1. Supported Event Types & Categories
+
+Recommendations are strictly tailored to the specific celebration type:
+- **`wedding`**: Heritage welcome decor, eco-mandap setup, live regional food counters, sangeet acoustic entertainment, elder hospitality, and food rescue protocols.
+- **`birthday`**: Interactive themed adventures, biodegradable balloon installations, interactive snack stations, cooperative treasure quests, puppetry/magic shows, and quiet sensory nooks.
+- **`community_event`**: Civic welcome rangoli, reusable modular stage backdrops, token-based community langar/meals, neighborhood cultural open-mic, barrier-free ramps, and 3-bin waste sorting stations.
+
+Ideas span 8 standardized categories:
+1. `theme_atmosphere`: Theme and ambience concepts.
+2. `decoration`: Stage, venue, and focal backdrop design.
+3. `food_refreshments`: Curated menus, live counters, and dietary coordination.
+4. `guest_engagement`: Interactive games, photo nooks, and trivia.
+5. `entertainment`: Acoustic ensembles, regional troupes, and performers.
+6. `invitations_communication`: Digital video/e-invites and logistics communication.
+7. `accessibility_inclusivity`: Senior citizen, toddler, and differently-abled accommodation.
+8. `sustainable_planning`: Zero single-use plastic, surplus food recovery, and eco-friendly favors.
+
+### 2. Budget Awareness & Qualitative Cost Levels
+
+- **Total Budget & Guest Headcount Context:** The recommendation engine evaluates the event's total budget and per-guest allocation (`total_budget_inr / guest_count`).
+- **Cost Levels:** Qualitative indicators (`low`, `medium`, `high`, `unknown`) indicating relative financial weight.
+- **Budget Fit:**
+  - `fits`: Idea fits comfortably within the current budget profile.
+  - `possible_with_adjustments`: Idea may stretch modest budgets; lower-cost alternatives are provided.
+  - `unknown`: Feasibility cannot be determined without additional user parameters.
+- **Lower-Cost Alternatives:** All medium and high cost ideas include concrete, actionable simpler or DIY alternatives (e.g., local seasonal marigolds instead of imported orchids).
+
+### 3. Provenance & Source Attribution
+
+PlanProof AI explicitly attributes the origin of every recommendation:
+- **`rules`** (`source="rules"` on item, `source="deterministic"` on envelope): Deterministic, calibrated rule catalog executed when offline, in fallback mode, or when Gemini is unconfigured.
+- **`demo`** (`source="demo"` on item and envelope): Deterministic, synthetic illustrative examples returned in `AI_MODE=demo`.
+- **`gemini`** (`source="gemini"` on item and envelope): Structured recommendations generated via Google Gemini AI when configured and in `auto` or `gemini` mode.
+
+### 4. Safety & Untrusted User Notes
+
+User-provided `theme_notes` (e.g. style preferences, cultural traditions) are treated strictly as untrusted text. Prompt injection attempts (e.g., instructions to alter statuses, overwrite budgets, or leak keys) are neutralized and cannot override system behavior or Pydantic validation schemas.
+
+### 5. API Endpoint: `GET /api/v1/events/{event_id}/ideas`
+
+#### Query Parameters
+- `category` *(optional)*: Filter by one of the 8 categories (e.g. `?category=food_refreshments`).
+- `limit` *(optional, default 10, range 1–50)*: Cap the number of ideas returned.
+
+#### Example Request
+```http
+GET /api/v1/events/EV-A1B2C3D4/ideas?limit=3 HTTP/1.1
+Host: localhost:8000
+Accept: application/json
+```
+
+#### Example Response (`AIResultEnvelope[EventIdeasResponse]`)
+```json
+{
+  "status": "success",
+  "source": "deterministic",
+  "data": {
+    "event_id": "EV-A1B2C3D4",
+    "event_type": "wedding",
+    "total_ideas": 3,
+    "ideas": [
+      {
+        "id": "IDEA-WED-01",
+        "category": "theme_atmosphere",
+        "title": "Heritage Marigold & Brass Diya Welcome Atmosphere",
+        "description": "Create a warm, culturally resonant arrival experience featuring brass urlis filled with floating rose petals and diyas, accented with fragrant local marigold (genda phool) arches.",
+        "reason": "Sets a welcoming traditional celebratory mood suitable for all age groups while remaining cost-effective. Suitable for your planned budget of ₹1,500,000 for 300 guests (~₹5,000/guest) in Jaipur.",
+        "estimated_cost_level": "medium",
+        "budget_fit": "fits",
+        "implementation_tips": [
+            "Source brass urlis from family collections or rent locally from traditional wedding utensil providers.",
+            "Procure seasonal loose marigolds in bulk directly from wholesale flower markets at dawn.",
+            "Arrange battery-operated or tea-light floating diyas for child and fabric safety."
+        ],
+        "alternatives": [
+            "Use terracotta bowls painted with gold acrylic instead of heavy brass vessels.",
+            "Focus marigold garlands strictly around the entrance arch and use warm fairy lights for secondary pathways."
+        ],
+        "source": "rules"
+      }
+    ],
+    "budget_context_inr": 1500000,
+    "disclaimer": "Recommendations and cost levels are qualitative planning guidance for inspiration. They do not constitute real vendor discovery, verified quotes, or guaranteed prices."
+  },
+  "message": "Deterministic fallback applied successfully.",
   "warnings": []
 }
 ```

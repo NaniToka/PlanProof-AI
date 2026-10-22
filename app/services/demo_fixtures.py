@@ -16,13 +16,17 @@ Rules:
 
 from __future__ import annotations
 
+from typing import Any
+
 from app.schemas import (
     CrisisRecoveryPlan,
+    EventIdeasResponse,
     EventPhase,
     EventTimelineResponse,
     EventType,
     FamilyCouncilCompromise,
     FamilyCouncilResponse,
+    IdeaSource,
     MessageTarget,
     PersonaReview,
     PlanningMilestone,
@@ -380,4 +384,22 @@ def get_demo_family_council() -> FamilyCouncilResponse:
                 ]
             },
         ),
+    )
+
+
+# ==============================================================================
+# 5. Demo Event Ideas
+# ==============================================================================
+
+
+def get_demo_event_ideas(event_or_req: Any = None) -> EventIdeasResponse:
+    """Return deterministic, illustrative demonstration event ideas.
+
+    All recommendations are explicitly attributed to demo provenance.
+    """
+    from app.services.recommendation_service import generate_deterministic_event_ideas
+
+    return generate_deterministic_event_ideas(
+        event_or_req=event_or_req or {},
+        source=IdeaSource.DEMO,
     )

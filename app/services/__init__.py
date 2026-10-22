@@ -46,6 +46,14 @@ from app.services.timeline import (
     generate_event_timeline_schedule,
     get_template_for_event_type,
 )
+from app.services.recommendation_service import (
+    BIRTHDAY_IDEAS_CATALOG,
+    COMMUNITY_IDEAS_CATALOG,
+    WEDDING_IDEAS_CATALOG,
+    build_event_ideas_prompt,
+    generate_deterministic_event_ideas,
+    get_catalog_for_event_type,
+)
 from app.services.vendor_service import (
     BIRTHDAY_VENDOR_TEMPLATE,
     COMMUNITY_VENDOR_TEMPLATE,
@@ -84,6 +92,12 @@ __all__ = [
     "WEDDING_VENDOR_TEMPLATE",
     "BIRTHDAY_VENDOR_TEMPLATE",
     "COMMUNITY_VENDOR_TEMPLATE",
+    "generate_deterministic_event_ideas",
+    "build_event_ideas_prompt",
+    "get_catalog_for_event_type",
+    "WEDDING_IDEAS_CATALOG",
+    "BIRTHDAY_IDEAS_CATALOG",
+    "COMMUNITY_IDEAS_CATALOG",
     "BudgetConstraintError",
     "BudgetEngineError",
     "BudgetValidationError",

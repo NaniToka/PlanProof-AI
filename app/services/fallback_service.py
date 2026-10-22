@@ -12,15 +12,19 @@ Supported feature fallbacks:
 
 from __future__ import annotations
 
+from typing import Any
+
 from app.schemas import (
     CityTier,
     CrisisRecoveryPlan,
+    EventIdeasResponse,
     EventPhase,
     EventPlanRequest,
     EventTimelineResponse,
     EventType,
     FamilyCouncilCompromise,
     FamilyCouncilResponse,
+    IdeaSource,
     MessageTarget,
     PersonaReview,
     PlanningMilestone,
@@ -421,3 +425,19 @@ def generate_deterministic_family_council(
             },
         ),
     )
+
+
+# ==============================================================================
+# 5. Deterministic Event Ideas
+# ==============================================================================
+
+
+def generate_deterministic_event_ideas(
+    request_data: Any = None,
+) -> EventIdeasResponse:
+    """Generate calibrated, deterministic event recommendations based on event profile."""
+    from app.services.recommendation_service import (
+        generate_deterministic_event_ideas as _gen_ideas,
+    )
+
+    return _gen_ideas(event_or_req=request_data or {}, source=IdeaSource.RULES)

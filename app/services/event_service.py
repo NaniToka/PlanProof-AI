@@ -24,15 +24,21 @@ from app.config import Settings, get_settings
 from app.data_loader import DatasetRepository
 from app.schemas import (
     CANONICAL_BUDGET_CATEGORIES,
+    AIResultEnvelope,
+    AIResultSource,
+    AITask,
     BudgetRebalanceResponse,
     EventBudgetPlanResponse,
     EventCreateRequest,
+    EventIdeasResponse,
     EventMilestone,
     EventProfile,
     EventTimelineScheduleResponse,
     EventUpdateRequest,
     EventVendorChecklistItem,
     EventVendorChecklistResponse,
+    IdeaCategory,
+    IdeaSource,
     MilestoneStatus,
     VendorChecklistItemUpdateRequest,
     get_current_ist_date,
@@ -47,6 +53,9 @@ from app.services.budget import (
 from app.services.timeline import (
     generate_event_timeline_schedule,
     get_template_for_event_type,
+)
+from app.services.recommendation_service import (
+    build_event_ideas_prompt,
 )
 from app.services.vendor_service import (
     calculate_vendor_checklist_summary,
@@ -718,6 +727,62 @@ class EventService:
         )
 
         return updated_item
+
+    async def get_event_ideas(
+        self,
+        event_id: str,
+        orchestrator: Any,
+        category: IdeaCategory | None = None,
+        limit: int = 10,
+    ) -> AIResultEnvelope[EventIdeasResponse] | None:
+        """Generate personalized event recommendations via AI orchestration with deterministic fallback.
+
+        Args:
+            event_id: Target event profile identifier.
+            orchestrator: Application AI orchestrator handling mode and fallbacks.
+            category: Optional category filter.
+            limit: Maximum count of recommendations to return.
+
+        Returns:
+            AIResultEnvelope containing EventIdeasResponse, or None if event not found.
+        """
+        profile = await self.get_event(event_id)
+        if profile is None:
+            return None
+
+        prompt, system_instruction = build_event_ideas_prompt(profile)
+        envelope: AIResultEnvelope[EventIdeasResponse] = await orchestrator.orchestrate(
+            task=AITask.PERSONALIZED_IDEAS,
+            response_schema=EventIdeasResponse,
+            prompt=prompt,
+            system_instruction=system_instruction,
+            request_data=profile,
+        )
+
+        if envelope.data is not None:
+            # Attribute item source correctly based on envelope source
+            target_source = IdeaSource.RULES
+            if envelope.source == AIResultSource.GEMINI:
+                target_source = IdeaSource.GEMINI
+            elif envelope.source == AIResultSource.DEMO:
+                target_source = IdeaSource.DEMO
+
+            for item in envelope.data.ideas:
+                item.source = target_source
+
+            # Category filter
+            if category is not None:
+                envelope.data.ideas = [
+                    i for i in envelope.data.ideas if i.category == category
+                ]
+
+            # Bounded limit
+            if limit and limit > 0:
+                envelope.data.ideas = envelope.data.ideas[:limit]
+
+            envelope.data.total_ideas = len(envelope.data.ideas)
+
+        return envelope
 
 
 

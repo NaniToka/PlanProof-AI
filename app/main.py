@@ -28,6 +28,7 @@ from app.schemas import (
     EventBudgetPlanResponse,
     EventBudgetRebalanceRequest,
     EventCreateRequest,
+    EventIdeasResponse,
     EventListResponse,
     EventMilestone,
     EventPlanRequest,
@@ -39,6 +40,7 @@ from app.schemas import (
     EventVendorChecklistItem,
     EventVendorChecklistResponse,
     HealthResponse,
+    IdeaCategory,
     MilestoneStatusUpdateRequest,
     PreMortemRisk,
     StandardErrorResponse,
@@ -713,6 +715,41 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 detail=f"Event profile '{event_id}' not found.",
             )
         return item
+
+    @app.get(
+        "/api/v1/events/{event_id}/ideas",
+        response_model=AIResultEnvelope[EventIdeasResponse],
+        responses={
+            404: {"model": StandardErrorResponse, "description": "Event profile not found"},
+            422: {"model": StandardErrorResponse, "description": "Validation error"},
+        },
+        tags=["Ideas", "Events"],
+        summary="Retrieve personalized, budget-aware recommendations for a saved event",
+    )
+    async def get_event_ideas(
+        event_id: str,
+        category: IdeaCategory | None = Query(
+            default=None, description="Optional category filter"
+        ),
+        limit: int = Query(
+            default=10, ge=1, le=50, description="Maximum number of recommendations to return"
+        ),
+        service: EventService = Depends(get_event_service),
+        orchestrator: AIOrchestrator = Depends(get_ai_orchestrator),
+    ) -> AIResultEnvelope[EventIdeasResponse]:
+        """Retrieve personalized, budget-aware recommendations via AI orchestration with deterministic fallback."""
+        result = await service.get_event_ideas(
+            event_id=event_id,
+            orchestrator=orchestrator,
+            category=category,
+            limit=limit,
+        )
+        if result is None:
+            raise StarletteHTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Event profile '{event_id}' not found.",
+            )
+        return result
 
     @app.get(
         "/api/v1/ai/status",

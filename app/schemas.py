@@ -139,6 +139,44 @@ class VendorChecklistPriority(StrEnum):
     HIGH = "high"
 
 
+class IdeaCategory(StrEnum):
+    """Category classification for event creative ideas and recommendations."""
+
+    THEME_ATMOSPHERE = "theme_atmosphere"
+    DECORATION = "decoration"
+    FOOD_REFRESHMENTS = "food_refreshments"
+    GUEST_ENGAGEMENT = "guest_engagement"
+    ENTERTAINMENT = "entertainment"
+    INVITATIONS_COMMUNICATION = "invitations_communication"
+    ACCESSIBILITY_INCLUSIVITY = "accessibility_inclusivity"
+    SUSTAINABLE_PLANNING = "sustainable_planning"
+
+
+class EstimatedCostLevel(StrEnum):
+    """Relative qualitative cost scale for recommendation ideas."""
+
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    UNKNOWN = "unknown"
+
+
+class BudgetFit(StrEnum):
+    """How well an idea aligns with the event's total and category budget."""
+
+    FITS = "fits"
+    POSSIBLE_WITH_ADJUSTMENTS = "possible_with_adjustments"
+    UNKNOWN = "unknown"
+
+
+class IdeaSource(StrEnum):
+    """Provenance of the recommendation: deterministic rules, demo fixtures, or Gemini AI."""
+
+    RULES = "rules"
+    DEMO = "demo"
+    GEMINI = "gemini"
+
+
 
 # ==============================================================================
 # 2. Dataset Schemas (Preloaded Data Integrity)
@@ -993,6 +1031,64 @@ class VendorChecklistItemUpdateRequest(BaseModel):
         return value
 
 
+class EventRecommendationItem(BaseModel):
+    """Curated creative recommendation for an event profile."""
+
+    id: str = Field(..., min_length=1, max_length=50, description="Stable unique recommendation identifier, e.g. IDEA-WED-01")
+    category: IdeaCategory = Field(..., description="Recommendation category")
+    title: str = Field(..., min_length=1, max_length=200, description="Concept title")
+    description: str = Field(..., min_length=1, max_length=1000, description="Detailed concept description")
+    reason: str = Field(..., min_length=1, max_length=500, description="Contextual rationale tailored to event type, budget, or theme")
+    estimated_cost_level: EstimatedCostLevel = Field(
+        default=EstimatedCostLevel.UNKNOWN,
+        description="Relative cost tier: low, medium, high, or unknown (not a verified market quote)"
+    )
+    budget_fit: BudgetFit = Field(
+        default=BudgetFit.UNKNOWN,
+        description="Budget feasibility assessment: fits, possible_with_adjustments, or unknown"
+    )
+    implementation_tips: list[str] = Field(
+        default_factory=list, description="Actionable execution and practical sourcing steps"
+    )
+    alternatives: list[str] | None = Field(
+        default=None, description="Optional simpler, DIY, or lower-cost alternatives"
+    )
+    source: IdeaSource = Field(
+        default=IdeaSource.RULES, description="Origin source: rules, demo, or gemini"
+    )
+
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    @field_validator("source", mode="before")
+    @classmethod
+    def normalize_source(cls, value: Any) -> Any:
+        """Allow 'deterministic' to be normalized to 'rules'."""
+        if isinstance(value, str):
+            val_lower = value.strip().lower()
+            if val_lower == "deterministic":
+                return IdeaSource.RULES
+        return value
+
+
+class EventIdeasResponse(BaseModel):
+    """Personalized event recommendations response payload."""
+
+    event_id: str = Field(..., description="Associated event profile ID")
+    event_type: EventType = Field(..., description="Event type category")
+    total_ideas: int = Field(..., ge=0, description="Total count of recommendations returned")
+    ideas: list[EventRecommendationItem] = Field(
+        default_factory=list, description="List of personalized recommendations"
+    )
+    budget_context_inr: int = Field(..., ge=0, description="Event total budget context in INR")
+    disclaimer: str = Field(
+        default=(
+            "Recommendations and cost levels are qualitative planning guidance for inspiration. "
+            "They do not constitute real vendor discovery, verified quotes, or guaranteed prices."
+        ),
+        description="Advisory disclaimer regarding qualitative estimates"
+    )
+
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
 
 
 class PlanningMilestone(BaseModel):

@@ -33,12 +33,14 @@ from app.schemas import (
 )
 from app.services.demo_fixtures import (
     get_demo_crisis_recovery,
+    get_demo_event_ideas,
     get_demo_event_risks,
     get_demo_family_council,
     get_demo_timeline,
 )
 from app.services.fallback_service import (
     generate_deterministic_crisis_recovery,
+    generate_deterministic_event_ideas,
     generate_deterministic_family_council,
     generate_deterministic_risks,
     generate_deterministic_timeline,
@@ -153,6 +155,16 @@ class AIOrchestrator:
         self.register_fallback(
             AITask.FAMILY_COUNCIL,
             lambda req: generate_deterministic_family_council(req),
+        )
+
+        # Personalized Ideas
+        self.register_demo_provider(
+            AITask.PERSONALIZED_IDEAS,
+            lambda req: get_demo_event_ideas(req),
+        )
+        self.register_fallback(
+            AITask.PERSONALIZED_IDEAS,
+            lambda req: generate_deterministic_event_ideas(req),
         )
 
     def register_fallback(self, task: AITask | str, provider: FallbackCallable[Any]) -> None:
