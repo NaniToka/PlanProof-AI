@@ -71,6 +71,14 @@ from app.services.risk_service import (
     calculate_priority_score,
     calculate_risk_summary,
 )
+from app.services.council_service import (
+    PERSONA_BUDGET_ID,
+    PERSONA_COMFORT_ID,
+    PERSONA_LOGISTICS_ID,
+    PERSONA_TRADITION_ID,
+    build_family_council_prompt,
+    generate_event_family_council,
+)
 
 __all__ = [
     "AIOrchestrator",
@@ -126,5 +134,11 @@ __all__ = [
     "calculate_risk_summary",
     "LIKELIHOOD_WEIGHTS",
     "IMPACT_WEIGHTS",
+    "generate_event_family_council",
+    "build_family_council_prompt",
+    "PERSONA_BUDGET_ID",
+    "PERSONA_COMFORT_ID",
+    "PERSONA_TRADITION_ID",
+    "PERSONA_LOGISTICS_ID",
 ]
 

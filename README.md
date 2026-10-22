@@ -126,6 +126,7 @@ PlanProof AI supports three explicit AI operation modes controlled by the `AI_MO
 | `PATCH` | `/api/v1/events/{event_id}/vendors/checklist/{item_id}` | Update task status, notes, priority, vendor name, or booking status |
 | `GET` | `/api/v1/events/{event_id}/ideas` | Retrieve personalized, budget-aware recommendations with AI orchestration and fallback |
 | `GET` | `/api/v1/events/{event_id}/risks` | Retrieve event pre-mortem failure mode analysis, scoring, and contingency plan |
+| `GET` | `/api/v1/events/{event_id}/family-council` | Retrieve four-persona family council deliberation, trade-offs, and recommendations |
 | `POST` | `/api/v1/validate-event` | Strict domain validation for event planning requests |
 | `POST` | `/api/v1/budget/calculate` | Deterministic 8-category budget allocation (Hamilton-Hare method) |
 | `POST` | `/api/v1/budget/rebalance` | Budget rebalancing with essential category preservation |
@@ -661,6 +662,167 @@ Accept: application/json
     "disclaimer": "Risk scores and assessments are deterministic planning estimates based on current event profile parameters, not statistically calibrated probabilities or guaranteed predictions."
   },
   "message": "Pre-mortem risk analysis completed successfully.",
+  "warnings": []
+}
+```
+
+---
+
+## Four-Persona Family Council
+
+The **Family Council** simulates four clearly differentiated, constructive perspectives reviewing an event plan. Rather than returning a single homogenous review, the council surfaces healthy planning tensions—such as balancing fiscal conservatism against guest hospitality or logistical simplicity against elaborate cultural traditions.
+
+> **Important Disclaimer:**
+> The Family Council personas are **simulated heuristic planning perspectives**, not real people, family member accounts, legal guardians, or licensed professional advisors. They do not communicate with third parties, make binding decisions, or replace personal judgment.
+
+### 1. The Four Personas and Their Responsibilities
+
+| Persona | ID | Perspective & Core Focus | Grounded Data Sources |
+|---|---|---|---|
+| **The Budget Guardian** | `budget_guardian` | Fiscal discipline, emergency buffer protection, cost-per-guest scrutiny, and identifying avoidable overspending. | Total budget, category allocations, emergency buffer %, guest count, vendor estimated costs. |
+| **The Guest Comfort Advocate** | `guest_comfort_advocate` | Hospitality, dietary variety, physical comfort, climate readiness, seating adequacy, and accessibility. | Guest count, venue/catering checklist status, weather/season notes, accessibility planning notes. |
+| **The Tradition & Experience Keeper** | `tradition_experience_keeper` | Meaningful family moments, theme cohesion, photographic milestones, and honoring explicit preferences. | Explicit `theme_notes`, `custom_notes`, event type, milestone schedule. *(Strictly avoids cultural/religious assumptions).* |
+| **The Logistics & Risk Planner** | `logistics_risk_planner` | Timeline feasibility, vendor contract progression, countdown pressures, and pre-mortem risk mitigations. | Milestones, vendor checklist statuses, pre-mortem risks (`RISK-*`). |
+
+### 2. Avoidance of Unsupported Cultural Assumptions
+
+PlanProof AI strictly adheres to **cultural neutrality**:
+- **Zero Cultural Assumptions**: The system never infers or assumes religion, caste, sect, ritual practices, or family hierarchy.
+- **Explicit Input Only**: Cultural preferences are only incorporated when explicitly supplied by the user in `theme_notes` or planning text.
+- **Inclusive Alternatives**: When cultural context is absent, the *Tradition & Experience Keeper* highlights that no specific cultural traditions were specified and offers open-ended suggestions for family dialogue (e.g., interactive guest books, storytelling toasts, or photo walls).
+- **Nuanced Accessibility Guidance**: The *Guest Comfort Advocate* notes unverified accessibility details as gentle planning reminders rather than asserting non-compliance.
+
+### 3. Creative Trade-Offs & Disagreement (No False Consensus)
+
+The council recognizes that event planning involves genuine compromises. Rather than forcing a artificial consensus, the summary generates trade-offs between competing priorities:
+- **Budget vs. Guest Comfort**: Reallocating decor funds toward climate-controlled seating or premium buffet options.
+- **Logistics vs. Tradition**: Simplifying multi-ceremony transitions to avoid guest fatigue and timeline delays.
+- **Buffer Protection vs. Vendor Upgrades**: Resisting non-essential vendor add-ons to preserve emergency funds.
+
+### 4. Deterministic Baseline & AI Enrichment
+
+- **Deterministic Baseline (Default)**: All 4 personas evaluate verified event profile attributes, calculated budgets, timelines, checklists, and pre-mortem risks using rule-based heuristics. The council functions completely offline without external API dependencies.
+- **Optional Gemini Enrichment**: When enabled, the existing AI orchestrator generates enriched, conversational evaluations. Prompts are sanitized against prompt injection, strictly preventing the AI from modifying authoritative budget numbers, dates, or risk scores.
+- **Automatic Fallback**: If Gemini is offline, times out, or returns a schema violation, the system automatically falls back to deterministic evaluations with source attribution in the envelope.
+
+### 5. API Endpoint: `GET /api/v1/events/{event_id}/family-council`
+
+#### Query Parameters
+- `reference_date` *(optional ISO date, e.g. `2027-04-15`)*: Simulated reference date for timeline calculations (defaults to current date).
+
+#### Example Request
+```http
+GET /api/v1/events/EV-35D19DF60424/family-council HTTP/1.1
+Host: localhost:8000
+Accept: application/json
+```
+
+#### Example Response (`AIResultEnvelope[EventFamilyCouncilResponse]`)
+```json
+{
+  "status": "success",
+  "source": "deterministic",
+  "data": {
+    "event_id": "EV-35D19DF60424",
+    "event_type": "wedding",
+    "council_summary": {
+      "overall_verdict": "The event plan shows strong foundational structure with 4 active personas providing balanced oversight.",
+      "strongest_aspects": [
+        "Core foundational budget structure is established with allocated spending categories.",
+        "Clear timeline and milestone scheduling in place."
+      ],
+      "critical_concerns": [
+        "Core foundational vendor items (venue, catering) have not progressed past research phase.",
+        "Emergency reserve is allocated at ₹0 (0.0% of total budget), which is below the recommended 5–10% safety cushion."
+      ],
+      "next_actions": [
+        "Rebalance budget immediately to protect a strict 5–10% unallocated contingency reserve.",
+        "Finalize and contract the primary venue and catering vendors.",
+        "Review accessibility requirements with all elderly guests and the venue management."
+      ],
+      "trade_offs": [
+        {
+          "title": "Cost Efficiency vs. Premium Guest Hospitality",
+          "perspective_a": "The Budget Guardian",
+          "perspective_b": "The Guest Comfort Advocate",
+          "description": "The Budget Guardian favors tighter per-guest cost caps, whereas the Guest Comfort Advocate prioritizes extensive catering spreads and hospitality comfort.",
+          "suggested_compromise": "Opt for quality over variety in the menu to control costs while ensuring high culinary satisfaction and prompt service."
+        }
+      ]
+    },
+    "personas": [
+      {
+        "persona_id": "budget_guardian",
+        "persona_name": "The Budget Guardian",
+        "perspective": "Focuses on affordability, budget allocations, emergency buffer protection, and avoidable overspending.",
+        "overall_assessment": "Budget requires immediate review: emergency buffer is critically underfunded.",
+        "strengths": [
+          "Total budget established at ₹1,500,000 for 250 guests (₹6,000 per guest)."
+        ],
+        "concerns": [
+          "Emergency buffer is 0.0% of total budget (₹0), below the recommended 5–10% safety threshold."
+        ],
+        "recommendations": [
+          "Rebalance budget categories to ringfence at least 5% (₹75,000) as an unallocated emergency buffer."
+        ],
+        "priority": "high",
+        "source": "rules"
+      },
+      {
+        "persona_id": "guest_comfort_advocate",
+        "persona_name": "The Guest Comfort Advocate",
+        "perspective": "Focuses on guest hospitality, catering adequacy, dietary diversity, seating, and inclusive experiences.",
+        "overall_assessment": "Planning for 250 guests requires attention to catering capacity and venue amenities.",
+        "strengths": [
+          "Event scale of 250 guests allows for structured group seating and focused catering management."
+        ],
+        "concerns": [
+          "Accessibility planning for elderly guests or guests with mobility needs is not yet documented."
+        ],
+        "recommendations": [
+          "Inquire with venue management regarding wheelchair ramps, elevator access, and priority seating near restrooms."
+        ],
+        "priority": "medium",
+        "source": "rules"
+      },
+      {
+        "persona_id": "tradition_experience_keeper",
+        "persona_name": "The Tradition & Experience Keeper",
+        "perspective": "Focuses on meaningful traditions, family preferences, event theme cohesion, and memorable shared experiences.",
+        "overall_assessment": "Cultural traditions and family preferences are currently open for definition.",
+        "strengths": [
+          "Open planning canvas allows families to intentionally choose rituals and traditions that resonate most."
+        ],
+        "concerns": [
+          "Specific family traditions, cultural rituals, or ceremonial priorities have not yet been specified."
+        ],
+        "recommendations": [
+          "Schedule an informal family conversation to identify 1-2 non-negotiable traditions or experiences to incorporate."
+        ],
+        "priority": "low",
+        "source": "rules"
+      },
+      {
+        "persona_id": "logistics_risk_planner",
+        "persona_name": "The Logistics & Risk Planner",
+        "perspective": "Focuses on timeline feasibility, vendor coordination, preparation gaps, and pre-mortem risk mitigations.",
+        "overall_assessment": "1 critical pre-mortem risks and 2 unbooked vendors require immediate logistical focus.",
+        "strengths": [
+          "Timeline milestones and vendor tracking workflows are active."
+        ],
+        "concerns": [
+          "Critical risk 'RISK-VENDOR-UNBOOKED': Core foundational vendor items (venue, catering) have not progressed past research phase."
+        ],
+        "recommendations": [
+          "Execute venue inspection walk-throughs within 72 hours and place earnest deposits."
+        ],
+        "priority": "high",
+        "source": "rules"
+      }
+    ],
+    "disclaimer": "The Family Council provides simulated planning perspectives for exploration and discussion. It does not replace professional event planning, legal, financial, or family consensus decisions."
+  },
+  "message": "Family council assessment completed successfully.",
   "warnings": []
 }
 ```

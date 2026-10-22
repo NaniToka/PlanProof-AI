@@ -1325,6 +1325,106 @@ class FamilyCouncilResponse(BaseModel):
     compromise: FamilyCouncilCompromise = Field(..., description="Synthesized family consensus")
 
 
+# ==============================================================================
+# Event Family Council (Prompt 14)
+# ==============================================================================
+
+
+class CouncilPriority(StrEnum):
+    """Priority urgency level of council assessment recommendations."""
+
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+
+
+class CouncilSource(StrEnum):
+    """Provenance origin of family council persona evaluation."""
+
+    RULES = "rules"
+    DEMO = "demo"
+    GEMINI = "gemini"
+
+
+class CouncilPersonaAssessment(BaseModel):
+    """Deliberation and assessment from a single simulated family council persona."""
+
+    persona_id: str = Field(..., description="Stable persona identifier (e.g. budget_guardian)")
+    persona_name: str = Field(..., description="Descriptive display name (e.g. The Budget Guardian)")
+    perspective: str = Field(..., description="Concise description of this persona's primary focus")
+    overall_assessment: str = Field(..., description="Short summary of this persona's overall evaluation")
+    strengths: list[str] = Field(default_factory=list, description="Positive aspects grounded in the event plan")
+    concerns: list[str] = Field(default_factory=list, description="Identified issues and risks with explanations")
+    recommendations: list[str] = Field(default_factory=list, description="Actionable recommendations referencing budget, timeline, or vendors")
+    priority: CouncilPriority = Field(default=CouncilPriority.MEDIUM, description="Urgency priority level: low, medium, or high")
+    source: CouncilSource = Field(default=CouncilSource.RULES, description="Provenance source: rules, demo, or gemini")
+
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    @field_validator("source", mode="before")
+    @classmethod
+    def normalize_source(cls, value: Any) -> Any:
+        """Normalize legacy source aliases to CouncilSource enum."""
+        if isinstance(value, str):
+            val_lower = value.strip().lower()
+            if val_lower == "deterministic":
+                return CouncilSource.RULES
+        return value
+
+
+class CouncilTradeOff(BaseModel):
+    """Documented creative tension or disagreement between two council personas."""
+
+    perspective_a: str = Field(..., description="First persona perspective (e.g. The Budget Guardian)")
+    perspective_b: str = Field(..., description="Second persona perspective (e.g. The Guest Comfort Advocate)")
+    topic: str = Field(..., description="Core area of tension (e.g. Catering variety vs emergency buffer)")
+    trade_off_description: str = Field(..., description="Clear explanation of the differing priorities without false consensus")
+    suggestion: str = Field(..., description="Balanced practical compromise suggestion")
+
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+
+class CouncilSummary(BaseModel):
+    """Consolidated executive summary of family council deliberation."""
+
+    strongest_aspects: list[str] = Field(default_factory=list, description="Top positive features agreed across the plan")
+    critical_concerns: list[str] = Field(default_factory=list, description="Primary planning gaps requiring attention")
+    recommended_next_actions: list[str] = Field(default_factory=list, description="Practical immediate next steps for the hosts")
+    trade_offs: list[CouncilTradeOff] = Field(default_factory=list, description="Identified trade-offs between competing priorities")
+
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+
+class EventFamilyCouncilResponse(BaseModel):
+    """Complete 4-persona family council review for a saved event."""
+
+    event_id: str = Field(..., description="Server-generated unique event identifier")
+    event_type: EventType = Field(..., description="Event type category")
+    summary: CouncilSummary = Field(..., description="Executive summary of council consensus and key trade-offs")
+    personas: list[CouncilPersonaAssessment] = Field(..., description="Exactly four differentiated persona assessments")
+    missing_data_warnings: list[str] = Field(default_factory=list, description="Advisory warnings highlighting missing event fields")
+    disclaimer: str = Field(
+        default=(
+            "Family Council assessments represent simulated advisory planning perspectives, not real family members or authoritative professional advice. "
+            "No assumptions are made regarding religion, caste, family hierarchy, or personal cultural practices."
+        ),
+        description="Planning disclaimer confirming simulated nature of personas and neutral cultural handling",
+    )
+
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    @field_validator("personas")
+    @classmethod
+    def validate_four_personas(cls, v: list[CouncilPersonaAssessment]) -> list[CouncilPersonaAssessment]:
+        """Verify that exactly four distinct personas are returned."""
+        if len(v) != 4:
+            raise ValueError(f"Family Council must contain exactly 4 personas, got {len(v)}")
+        ids = [p.persona_id for p in v]
+        if len(ids) != len(set(ids)):
+            raise ValueError("Duplicate persona IDs detected in Family Council response")
+        return v
+
+
 class WhatsAppMessageDraft(BaseModel):
     """Plain-text crisis communication message ready to be copied."""
 

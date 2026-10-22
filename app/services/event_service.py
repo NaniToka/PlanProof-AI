@@ -29,8 +29,10 @@ from app.schemas import (
     AIResultStatus,
     AITask,
     BudgetRebalanceResponse,
+    CouncilSource,
     EventBudgetPlanResponse,
     EventCreateRequest,
+    EventFamilyCouncilResponse,
     EventIdeasResponse,
     EventMilestone,
     EventProfile,
@@ -60,6 +62,10 @@ from app.services.timeline import (
 )
 from app.services.recommendation_service import (
     build_event_ideas_prompt,
+)
+from app.services.council_service import (
+    build_family_council_prompt,
+    generate_event_family_council,
 )
 from app.services.risk_service import (
     analyze_event_risks,
@@ -880,6 +886,100 @@ class EventService:
             message="Deterministic pre-mortem risk analysis completed.",
             warnings=risks_res.missing_data_warnings,
         )
+
+    async def get_event_family_council(
+        self,
+        event_id: str,
+        orchestrator: AIOrchestrator | None = None,
+        reference_date: date | None = None,
+    ) -> AIResultEnvelope[EventFamilyCouncilResponse] | None:
+        """Review an event plan across four distinct family council perspectives with trade-offs.
+
+        Args:
+            event_id: Target event profile identifier.
+            orchestrator: Optional AI orchestrator for demo fixtures or Gemini enrichment.
+            reference_date: Optional simulated reference date.
+
+        Returns:
+            AIResultEnvelope containing EventFamilyCouncilResponse, or None if event not found.
+        """
+        profile = await self.get_event(event_id)
+        if profile is None:
+            return None
+
+        # 1. Deterministic baseline family council deliberation
+        active_mode = getattr(orchestrator, "mode", None) if orchestrator else None
+        source_val = CouncilSource.DEMO if active_mode == AIMode.DEMO else CouncilSource.RULES
+
+        # Gather pre-mortem risks to feed into council
+        risks_res = analyze_event_risks(profile=profile, reference_date=reference_date)
+        council_res = generate_event_family_council(
+            profile=profile,
+            risks=risks_res,
+            reference_date=reference_date,
+            source=source_val,
+        )
+
+        # 2. If no orchestrator or mode is demo/fallback, construct envelope directly
+        if orchestrator is None or active_mode == AIMode.DEMO:
+            envelope_source = AIResultSource.DEMO if active_mode == AIMode.DEMO else AIResultSource.DETERMINISTIC
+            return AIResultEnvelope[EventFamilyCouncilResponse](
+                status=AIResultStatus.SUCCESS,
+                source=envelope_source,
+                data=council_res,
+                message="Family council review completed successfully.",
+                warnings=council_res.missing_data_warnings,
+            )
+
+        # 3. If mode is gemini
+        if active_mode == AIMode.GEMINI:
+            if not getattr(orchestrator.gemini_service, "is_configured", False):
+                return AIResultEnvelope[EventFamilyCouncilResponse](
+                    status=AIResultStatus.UNAVAILABLE,
+                    source=AIResultSource.GEMINI,
+                    data=None,
+                    message="Gemini AI is required in 'gemini' mode, but GEMINI_API_KEY is not configured.",
+                    warnings=["Gemini API key is unconfigured. Fallback is disallowed in 'gemini' mode."],
+                )
+            prompt, system_instruction = build_family_council_prompt(profile, council_res.personas)
+            envelope: AIResultEnvelope[EventFamilyCouncilResponse] = await orchestrator.orchestrate(
+                task=AITask.FAMILY_COUNCIL,
+                response_schema=EventFamilyCouncilResponse,
+                prompt=prompt,
+                system_instruction=system_instruction,
+                request_data=profile,
+                fallback=lambda _req: council_res,
+            )
+            if envelope.data is not None:
+                for p in envelope.data.personas:
+                    p.source = CouncilSource.GEMINI
+            return envelope
+
+        # 4. Mode is auto: attempt Gemini enrichment if configured, otherwise return deterministic results
+        if getattr(orchestrator.gemini_service, "is_configured", False):
+            prompt, system_instruction = build_family_council_prompt(profile, council_res.personas)
+            envelope = await orchestrator.orchestrate(
+                task=AITask.FAMILY_COUNCIL,
+                response_schema=EventFamilyCouncilResponse,
+                prompt=prompt,
+                system_instruction=system_instruction,
+                request_data=profile,
+                fallback=lambda _req: council_res,
+            )
+            if envelope.data is not None and envelope.source == AIResultSource.GEMINI:
+                for p in envelope.data.personas:
+                    p.source = CouncilSource.GEMINI
+            return envelope
+
+        # Default auto offline fallback
+        return AIResultEnvelope[EventFamilyCouncilResponse](
+            status=AIResultStatus.FALLBACK,
+            source=AIResultSource.DETERMINISTIC,
+            data=council_res,
+            message="Deterministic family council deliberation completed.",
+            warnings=council_res.missing_data_warnings,
+        )
+
 
 
 
