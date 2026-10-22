@@ -94,6 +94,19 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 Open [http://localhost:8000](http://localhost:8000) in your browser to view the interactive dashboard, or visit [http://localhost:8000/docs](http://localhost:8000/docs) for the interactive Swagger documentation.
 
+### Interactive Planning Console Navigation
+
+The web frontend at `http://localhost:8000` is an interactive planning console styled in **Jet Black (`#050505`)**, **Royal Amethyst (`#3B0A6B`)**, and **Electric Cyan (`#00E5FF`)**. It connects directly to the backend APIs across eight views:
+
+1. **Overview (`#overview`)**: Quick metric tiles (total budget, headcount, milestone progress %, critical risks count), 8-category budget allocation bar, upcoming milestones, vendor progress, risk alert teaser, and family council summary.
+2. **Event Details (`#event-details`)**: Complete event profile breakdown, live profile editor (`PATCH /api/v1/events/{id}`), and list of all stored event profiles.
+3. **Budget Planner (`#budget`)**: Visual breakdown of all 8 categories (Venue, Catering, Decor, Photo/Video, Attire/Beauty, Entertainment, Logistics, Contingency Buffer), per-guest cost calculation, buffer health status (≥ 5%), and interactive deterministic budget rebalancer.
+4. **Timeline (`#timeline`)**: Chronological milestone checklist with calendar deadlines, lead times (`T-150 days`), overdue alerts, category filters, and one-click completion toggles.
+5. **Vendor Checklist (`#vendors`)**: 9-item vendor coordination workflow with status filters, booking progression badges (`not_started`, `researching`, `contacted`, `booked`), and update modal for assigning vendors and notes.
+6. **Event Ideas (`#ideas`)**: Personalized, budget-aware creative recommendations with category filters, feasibility fit pills, execution tips, and lower-cost alternatives.
+7. **Risk Analysis (`#risks`)**: Pre-mortem failure mode cards with heuristic priority scores (1 to 12), warning signs, preventive measures, contingency plans, and disclaimers.
+8. **Family Council (`#council`)**: Simulated deliberation across four distinct personas (*The Budget Guardian*, *The Guest Comfort Advocate*, *The Tradition & Experience Keeper*, *The Logistics & Risk Planner*), creative trade-offs, and executive verdict.
+
 ---
 
 ## AI Operation Modes (`AI_MODE`)

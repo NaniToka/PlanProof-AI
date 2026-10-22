@@ -286,6 +286,7 @@ async function renderOverview() {
     if (budgetPlan?.allocations) {
       const total = budgetPlan.total_budget_inr || 1;
       for (const [cat, amt] of Object.entries(budgetPlan.allocations)) {
+        if (cat === 'total_budget_inr') continue;
         const pct = ((amt / total) * 100).toFixed(1);
         const color = BUDGET_COLORS[cat] || '#8b5cf6';
         stackedBarHTML += `<div class="budget-bar-segment" style="width: ${pct}%; background-color: ${color};" title="${CATEGORY_NAMES[cat] || cat}: ${pct}% (${formatINR(amt)})"></div>`;
@@ -628,6 +629,7 @@ async function renderBudget() {
     let stackedBarHTML = '';
 
     for (const [cat, amt] of Object.entries(budgetPlan.allocations)) {
+      if (cat === 'total_budget_inr') continue;
       const pct = ((amt / total) * 100).toFixed(1);
       const color = BUDGET_COLORS[cat] || '#8B5CF6';
       stackedBarHTML += `<div class="budget-bar-segment" style="width: ${pct}%; background-color: ${color};" title="${CATEGORY_NAMES[cat] || cat}: ${pct}% (${formatINR(amt)})"></div>`;
@@ -1381,6 +1383,11 @@ function updateActiveEventBadge(profile) {
 
 async function selectEvent(eventId) {
   state.currentEventId = eventId;
+  try {
+    sessionStorage.setItem('planproof_active_event_id', eventId);
+  } catch (err) {
+    // Graceful fallback if storage disabled
+  }
   const select = document.getElementById('event-select-dropdown');
   if (select) select.value = eventId;
 
@@ -1417,8 +1424,17 @@ async function loadEventsList() {
       select.appendChild(opt);
     });
 
-    // Default select first if not selected
-    if (!state.currentEventId || !state.events.find(e => e.event_id === state.currentEventId)) {
+    // Check sessionStorage for active event persistence across refreshes
+    let savedId = null;
+    try {
+      savedId = sessionStorage.getItem('planproof_active_event_id');
+    } catch (err) {
+      // Storage access check
+    }
+
+    if (savedId && state.events.some(e => e.event_id === savedId)) {
+      state.currentEventId = savedId;
+    } else if (!state.currentEventId || !state.events.some(e => e.event_id === state.currentEventId)) {
       state.currentEventId = state.events[0].event_id;
     }
 
