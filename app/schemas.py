@@ -177,6 +177,47 @@ class IdeaSource(StrEnum):
     GEMINI = "gemini"
 
 
+class RiskLikelihood(StrEnum):
+    """Estimated likelihood level for an event pre-mortem risk."""
+
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    UNKNOWN = "unknown"
+
+
+class RiskImpact(StrEnum):
+    """Potential operational or financial severity of an event risk."""
+
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    CRITICAL = "critical"
+
+
+class RiskCategory(StrEnum):
+    """Classification of event operational failure modes."""
+
+    BUDGET_OVERRUN = "budget_overrun"
+    TIMELINE_DELAY = "timeline_delay"
+    VENDOR_COORDINATION = "vendor_coordination"
+    GUEST_CATERING = "guest_catering"
+    WEATHER_EXPOSURE = "weather_exposure"
+    TRANSPORT_LOGISTICS = "transport_logistics"
+    SAFETY_ACCESSIBILITY = "safety_accessibility"
+    PERMISSIONS_COMPLIANCE = "permissions_compliance"
+    SUPPLIER_DISRUPTION = "supplier_disruption"
+    COMMUNICATION_GAPS = "communication_gaps"
+
+
+class RiskSource(StrEnum):
+    """Provenance origin of risk identification: rules, demo, or gemini."""
+
+    RULES = "rules"
+    DEMO = "demo"
+    GEMINI = "gemini"
+
+
 
 # ==============================================================================
 # 2. Dataset Schemas (Preloaded Data Integrity)
@@ -1086,6 +1127,65 @@ class EventIdeasResponse(BaseModel):
             "They do not constitute real vendor discovery, verified quotes, or guaranteed prices."
         ),
         description="Advisory disclaimer regarding qualitative estimates"
+    )
+
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+
+class EventRiskItem(BaseModel):
+    """Curated pre-mortem risk item with priority scoring, warning signs, and mitigations."""
+
+    id: str = Field(..., min_length=1, max_length=50, description="Stable unique risk identifier (e.g. RISK-BUDGET-01)")
+    category: RiskCategory = Field(..., description="Risk domain category")
+    title: str = Field(..., min_length=1, max_length=200, description="Concise failure mode title")
+    description: str = Field(..., min_length=1, max_length=1000, description="Detailed explanation of potential failure mode")
+    likelihood: RiskLikelihood = Field(default=RiskLikelihood.UNKNOWN, description="Planning estimate likelihood: low, medium, high, unknown")
+    impact: RiskImpact = Field(default=RiskImpact.MEDIUM, description="Operational severity: low, medium, high, critical")
+    priority_score: int = Field(..., ge=1, le=12, description="Deterministic bounded priority score (1 to 12)")
+    warning_signs: list[str] = Field(default_factory=list, description="Observable early indicators of this risk")
+    mitigations: list[str] = Field(default_factory=list, description="Actionable preventive measures")
+    contingency_plan: str = Field(..., min_length=1, max_length=500, description="Practical fallback if risk occurs")
+    related_budget_category: str | None = Field(default=None, description="Related budget category, if applicable")
+    related_milestone_id: str | None = Field(default=None, description="Related timeline milestone reference, if applicable")
+    source: RiskSource = Field(default=RiskSource.RULES, description="Origin provenance: rules, demo, or gemini")
+
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    @field_validator("source", mode="before")
+    @classmethod
+    def normalize_source(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            val_lower = value.strip().lower()
+            if val_lower == "deterministic":
+                return RiskSource.RULES
+        return value
+
+
+class RiskSummary(BaseModel):
+    """Summary counts of identified risks broken down by severity level."""
+
+    total_risks: int = Field(..., ge=0, description="Total risks identified")
+    critical_risks: int = Field(default=0, ge=0, description="Count of critical risks (score >= 9)")
+    high_risks: int = Field(default=0, ge=0, description="Count of high risks (score 6 to 8)")
+    medium_risks: int = Field(default=0, ge=0, description="Count of medium risks (score 3 to 5)")
+    low_risks: int = Field(default=0, ge=0, description="Count of low risks (score < 3)")
+    highest_priority_score: int = Field(default=0, ge=0, le=12, description="Highest priority score among identified risks")
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class EventRisksResponse(BaseModel):
+    """Complete pre-mortem risk assessment response for a saved event."""
+
+    event_id: str = Field(..., description="Server-generated event identifier")
+    event_type: EventType = Field(..., description="Event type category")
+    total_risks: int = Field(..., ge=0, description="Total count of risks returned")
+    summary: RiskSummary = Field(..., description="Aggregated risk count breakdown by priority")
+    risks: list[EventRiskItem] = Field(default_factory=list, description="Deterministically sorted risk items")
+    missing_data_warnings: list[str] = Field(default_factory=list, description="Warnings highlighting missing event data affecting analysis")
+    disclaimer: str = Field(
+        default="Risk scores and assessments are deterministic planning estimates based on current event profile parameters, not statistically calibrated probabilities or guaranteed predictions.",
+        description="Advisory planning disclaimer"
     )
 
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")

@@ -125,6 +125,7 @@ PlanProof AI supports three explicit AI operation modes controlled by the `AI_MO
 | `GET` | `/api/v1/events/{event_id}/vendors/checklist` | Retrieve event-specific vendor checklist and coordination status summary |
 | `PATCH` | `/api/v1/events/{event_id}/vendors/checklist/{item_id}` | Update task status, notes, priority, vendor name, or booking status |
 | `GET` | `/api/v1/events/{event_id}/ideas` | Retrieve personalized, budget-aware recommendations with AI orchestration and fallback |
+| `GET` | `/api/v1/events/{event_id}/risks` | Retrieve event pre-mortem failure mode analysis, scoring, and contingency plan |
 | `POST` | `/api/v1/validate-event` | Strict domain validation for event planning requests |
 | `POST` | `/api/v1/budget/calculate` | Deterministic 8-category budget allocation (Hamilton-Hare method) |
 | `POST` | `/api/v1/budget/rebalance` | Budget rebalancing with essential category preservation |
@@ -523,6 +524,143 @@ Accept: application/json
     "disclaimer": "Recommendations and cost levels are qualitative planning guidance for inspiration. They do not constitute real vendor discovery, verified quotes, or guaranteed prices."
   },
   "message": "Deterministic fallback applied successfully.",
+  "warnings": []
+}
+```
+
+---
+
+## Event Pre-Mortem Risk Analysis Engine
+
+PlanProof AI includes a dedicated, deterministic **Pre-Mortem Risk Analysis Engine** for weddings, birthdays, and community events. Rather than waiting for a crisis to occur during an event, the pre-mortem engine analyzes the saved event profile parameters, budget allocations, vendor booking progress, timeline runway, and location characteristics to uncover potential vulnerabilities and provide actionable mitigations and contingency playbooks in advance.
+
+### 1. Key Capabilities & Invariants
+- **Deterministic Foundation**: Built on pure Python business rules. Does not depend on external AI availability and never crashes when offline.
+- **AI Enrichment**: In `auto` mode (with configured `GEMINI_API_KEY`) or `gemini` mode, Gemini AI enriches risks with contextual narrative explanations and tailored playbooks, while strictly respecting deterministic priority scores, bounds, and profile fields.
+- **Security & Untrusted User Notes**: User-provided `theme_notes` are sanitized and explicitly treated as untrusted text. Prompt injections attempting to override likelihoods, impacts, or scores are neutralized.
+- **Resource Immutability**: Calculating pre-mortem risks is strictly non-mutating and does not alter stored event profiles, budgets, timelines, or checklists.
+
+### 2. Supported Risk Categories
+The engine identifies failure modes across 10 core dimensions:
+1. `budget_overrun`: Emergency contingency buffer exhaustion (< 5%) or budget allocation deficits.
+2. `timeline_delay`: Compressed countdown runway (< 60 days) with pending essential milestones.
+3. `vendor_coordination`: Critical foundational vendors (venue, catering, photography, sound) uncontracted.
+4. `guest_catering`: Per-guest catering budget stretched below regional baseline or large headcount crowd surge.
+5. `weather_exposure`: Outdoor, lawn, terrace, or monsoon season vulnerability without weatherproof cover.
+6. `transport_logistics`: Congested metro transit corridors, peak wedding dates, and outstation parking shortages.
+7. `safety_accessibility`: Multi-generational guest accessibility, senior mobility, first-aid, and child safety.
+8. `permissions_compliance`: Municipal sound curfews, police NOCs, statutory permits, and decibel limits.
+9. `supplier_disruption`: Day-of supplier cancellations or single points of failure without standby backup contacts.
+10. `communication_gaps`: Uncentralized family coordination, ambiguous vendor points of contact, or unconfirmed RSVPs.
+
+### 3. Transparent Deterministic Scoring Formula
+Risk priority scores are calculated using transparent integer weights:
+- **Likelihood Weights**:
+  - `low`: 1
+  - `unknown`: 1 *(safely handled as conservative default)*
+  - `medium`: 2
+  - `high`: 3
+- **Impact Weights**:
+  - `low`: 1
+  - `medium`: 2
+  - `high`: 3
+  - `critical`: 4
+
+$$\text{priority\_score} = \text{likelihood\_weight} \times \text{impact\_weight}$$
+
+- **Range**: Strictly bounded integer between `1` (minimum) and `12` (maximum).
+- **Monotonicity Invariant**: Higher likelihood or impact is mathematically guaranteed never to decrease the priority score.
+- **Severity Classification**:
+  - `critical`: Priority score $\ge 9$
+  - `high`: Priority score $6 \dots 8$
+  - `medium`: Priority score $3 \dots 5$
+  - `low`: Priority score $< 3$
+- **Deduplication & Stable Ordering**: Duplicate risks are eliminated, and items are sorted deterministically by `(-priority_score, id)`.
+
+### 4. Planning Estimates Disclaimer
+> **Important Disclaimer:**
+> Pre-mortem risk scores and assessments are **qualitative planning estimates** based on deterministic heuristics and current profile parameters. They are **not statistically calibrated actuarial probabilities or guaranteed predictions of future outcomes**.
+
+### 5. Missing Data Handling
+When optional event data is missing, the engine gracefully limits its assessment without fabricating details or crashing:
+- **Missing Event Date**: Countdown-dependent milestone crunch risks are omitted. An advisory notice is added to `missing_data_warnings`.
+- **Missing City**: Transit logistics and local municipal permit checks assume regional defaults with an advisory warning.
+- **Empty Vendor Checklist**: Uncontracted vendor progression risks are skipped with an advisory warning.
+
+### 6. API Endpoint: `GET /api/v1/events/{event_id}/risks`
+
+#### Query Parameters
+- `reference_date` *(optional ISO date, e.g. `2027-04-15`)*: Simulated reference date for timeline calculations (defaults to current date).
+
+#### Example Request
+```http
+GET /api/v1/events/EV-35D19DF60424/risks HTTP/1.1
+Host: localhost:8000
+Accept: application/json
+```
+
+#### Example Response (`AIResultEnvelope[EventRisksResponse]`)
+```json
+{
+  "status": "success",
+  "source": "deterministic",
+  "data": {
+    "event_id": "EV-35D19DF60424",
+    "event_type": "wedding",
+    "total_risks": 4,
+    "summary": {
+      "critical_risks": 1,
+      "high_risks": 2,
+      "medium_risks": 1,
+      "low_risks": 0,
+      "highest_priority_score": 12
+    },
+    "risks": [
+      {
+        "id": "RISK-BUDGET-BUFFER",
+        "category": "budget_overrun",
+        "title": "Insufficient Emergency Contingency Buffer",
+        "description": "Emergency reserve is allocated at ₹0 (0.0% of total budget), which is below the recommended 5–10% safety cushion required to absorb unexpected vendor surcharges or overtime.",
+        "likelihood": "high",
+        "impact": "critical",
+        "priority_score": 12,
+        "warning_signs": [
+          "Zero or nominal allocation in emergency_buffer category.",
+          "No financial margin reserved for last-minute guest headcount additions."
+        ],
+        "mitigations": [
+          "Rebalance budget immediately to protect a strict 5–10% unallocated contingency reserve.",
+          "Cap secondary aesthetic decor expenditures until core contracts are signed with locked rates."
+        ],
+        "contingency_plan": "Identify non-essential aesthetic items that can be cancelled 7 days prior without penalty.",
+        "related_budget_category": "buffer",
+        "related_milestone_id": null,
+        "source": "rules"
+      },
+      {
+        "id": "RISK-VENDOR-UNBOOKED",
+        "category": "vendor_coordination",
+        "title": "Critical Foundational Vendors Uncontracted",
+        "description": "Core foundational vendor items (venue, catering) have not progressed past research phase.",
+        "likelihood": "medium",
+        "impact": "critical",
+        "priority_score": 8,
+        "warning_signs": [
+          "Venue or catering contracts remain in 'not_started' or 'researching' status."
+        ],
+        "mitigations": [
+          "Execute venue inspection walk-throughs within 72 hours and place earnest deposits."
+        ],
+        "contingency_plan": "Maintain 2 backup venue/caterer contacts with immediate booking availability on standby.",
+        "related_budget_category": "venue",
+        "related_milestone_id": null,
+        "source": "rules"
+      }
+    ],
+    "missing_data_warnings": [],
+    "disclaimer": "Risk scores and assessments are deterministic planning estimates based on current event profile parameters, not statistically calibrated probabilities or guaranteed predictions."
+  },
+  "message": "Pre-mortem risk analysis completed successfully.",
   "warnings": []
 }
 ```

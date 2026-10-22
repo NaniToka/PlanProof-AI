@@ -63,6 +63,14 @@ from app.services.vendor_service import (
     get_vendor_template_for_event_type,
     recalculate_checklist_due_dates,
 )
+from app.services.risk_service import (
+    IMPACT_WEIGHTS,
+    LIKELIHOOD_WEIGHTS,
+    analyze_event_risks,
+    build_event_risks_prompt,
+    calculate_priority_score,
+    calculate_risk_summary,
+)
 
 __all__ = [
     "AIOrchestrator",
@@ -112,5 +120,11 @@ __all__ = [
     "GeminiRateLimitError",
     "GeminiService",
     "GeminiTimeoutError",
+    "analyze_event_risks",
+    "build_event_risks_prompt",
+    "calculate_priority_score",
+    "calculate_risk_summary",
+    "LIKELIHOOD_WEIGHTS",
+    "IMPACT_WEIGHTS",
 ]
 

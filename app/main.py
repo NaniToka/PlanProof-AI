@@ -33,6 +33,7 @@ from app.schemas import (
     EventMilestone,
     EventPlanRequest,
     EventProfile,
+    EventRisksResponse,
     EventTimelineResponse,
     EventTimelineScheduleResponse,
     EventUpdateRequest,
@@ -743,6 +744,38 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             orchestrator=orchestrator,
             category=category,
             limit=limit,
+        )
+        if result is None:
+            raise StarletteHTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Event profile '{event_id}' not found.",
+            )
+        return result
+
+    @app.get(
+        "/api/v1/events/{event_id}/risks",
+        response_model=AIResultEnvelope[EventRisksResponse],
+        responses={
+            404: {"model": StandardErrorResponse, "description": "Event profile not found"},
+            422: {"model": StandardErrorResponse, "description": "Validation error"},
+        },
+        tags=["Risks", "Events"],
+        summary="Retrieve pre-mortem operational, budget, and logistical risk analysis for a saved event",
+    )
+    async def get_event_risks(
+        event_id: str,
+        reference_date: date | None = Query(
+            default=None,
+            description="Optional simulated reference date for timeline calculations (defaults to current date)",
+        ),
+        service: EventService = Depends(get_event_service),
+        orchestrator: AIOrchestrator = Depends(get_ai_orchestrator),
+    ) -> AIResultEnvelope[EventRisksResponse]:
+        """Analyze pre-mortem risks for a saved event profile using deterministic rules and optional AI enrichment."""
+        result = await service.get_event_risks(
+            event_id=event_id,
+            orchestrator=orchestrator,
+            reference_date=reference_date,
         )
         if result is None:
             raise StarletteHTTPException(

@@ -20,12 +20,13 @@ import logging
 from datetime import date, datetime, timedelta, timezone
 from uuid import uuid4
 
-from app.config import Settings, get_settings
+from app.config import AIMode, Settings, get_settings
 from app.data_loader import DatasetRepository
 from app.schemas import (
     CANONICAL_BUDGET_CATEGORIES,
     AIResultEnvelope,
     AIResultSource,
+    AIResultStatus,
     AITask,
     BudgetRebalanceResponse,
     EventBudgetPlanResponse,
@@ -33,6 +34,7 @@ from app.schemas import (
     EventIdeasResponse,
     EventMilestone,
     EventProfile,
+    EventRisksResponse,
     EventTimelineScheduleResponse,
     EventUpdateRequest,
     EventVendorChecklistItem,
@@ -40,6 +42,8 @@ from app.schemas import (
     IdeaCategory,
     IdeaSource,
     MilestoneStatus,
+    RiskCategory,
+    RiskSource,
     VendorChecklistItemUpdateRequest,
     get_current_ist_date,
     validate_event_date,
@@ -56,6 +60,10 @@ from app.services.timeline import (
 )
 from app.services.recommendation_service import (
     build_event_ideas_prompt,
+)
+from app.services.risk_service import (
+    analyze_event_risks,
+    build_event_risks_prompt,
 )
 from app.services.vendor_service import (
     calculate_vendor_checklist_summary,
@@ -783,6 +791,95 @@ class EventService:
             envelope.data.total_ideas = len(envelope.data.ideas)
 
         return envelope
+
+    async def get_event_risks(
+        self,
+        event_id: str,
+        orchestrator: Any | None = None,
+        reference_date: date | None = None,
+    ) -> AIResultEnvelope[EventRisksResponse] | None:
+        """Analyze pre-mortem risks for a saved event using deterministic rules.
+
+        Args:
+            event_id: Target event profile identifier.
+            orchestrator: Optional AI orchestrator for demo fixtures or Gemini enrichment.
+            reference_date: Optional simulated reference date.
+
+        Returns:
+            AIResultEnvelope containing EventRisksResponse, or None if event not found.
+        """
+        profile = await self.get_event(event_id)
+        if profile is None:
+            return None
+
+        # 1. Deterministic baseline analysis
+        active_mode = getattr(orchestrator, "mode", None) if orchestrator else None
+        source_val = RiskSource.DEMO if active_mode == AIMode.DEMO else RiskSource.RULES
+        risks_res = analyze_event_risks(
+            profile=profile,
+            reference_date=reference_date,
+            source=source_val,
+        )
+
+        # 2. If no orchestrator or mode is demo/fallback, construct envelope directly
+        if orchestrator is None or active_mode == AIMode.DEMO:
+            envelope_source = AIResultSource.DEMO if active_mode == AIMode.DEMO else AIResultSource.DETERMINISTIC
+            return AIResultEnvelope[EventRisksResponse](
+                status=AIResultStatus.SUCCESS,
+                source=envelope_source,
+                data=risks_res,
+                message="Pre-mortem risk analysis completed successfully.",
+                warnings=risks_res.missing_data_warnings,
+            )
+
+        # 3. If mode is gemini
+        if active_mode == AIMode.GEMINI:
+            if not getattr(orchestrator.gemini_service, "is_configured", False):
+                return AIResultEnvelope[EventRisksResponse](
+                    status=AIResultStatus.UNAVAILABLE,
+                    source=AIResultSource.GEMINI,
+                    data=None,
+                    message="Gemini AI is required in 'gemini' mode, but GEMINI_API_KEY is not configured.",
+                    warnings=["Gemini API key is unconfigured. Fallback is disallowed in 'gemini' mode."],
+                )
+            prompt, system_instruction = build_event_risks_prompt(profile, risks_res.risks)
+            envelope: AIResultEnvelope[EventRisksResponse] = await orchestrator.orchestrate(
+                task=AITask.EVENT_RISKS,
+                response_schema=EventRisksResponse,
+                prompt=prompt,
+                system_instruction=system_instruction,
+                request_data=profile,
+                fallback=lambda _req: risks_res,
+            )
+            if envelope.data is not None:
+                for r in envelope.data.risks:
+                    r.source = RiskSource.GEMINI
+            return envelope
+
+        # 4. Mode is auto: attempt Gemini enrichment if configured, otherwise return deterministic results
+        if getattr(orchestrator.gemini_service, "is_configured", False):
+            prompt, system_instruction = build_event_risks_prompt(profile, risks_res.risks)
+            envelope = await orchestrator.orchestrate(
+                task=AITask.EVENT_RISKS,
+                response_schema=EventRisksResponse,
+                prompt=prompt,
+                system_instruction=system_instruction,
+                request_data=profile,
+                fallback=lambda _req: risks_res,
+            )
+            if envelope.data is not None and envelope.source == AIResultSource.GEMINI:
+                for r in envelope.data.risks:
+                    r.source = RiskSource.GEMINI
+            return envelope
+
+        # Default auto offline fallback
+        return AIResultEnvelope[EventRisksResponse](
+            status=AIResultStatus.FALLBACK,
+            source=AIResultSource.DETERMINISTIC,
+            data=risks_res,
+            message="Deterministic pre-mortem risk analysis completed.",
+            warnings=risks_res.missing_data_warnings,
+        )
 
 
 
