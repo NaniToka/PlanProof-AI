@@ -3,108 +3,321 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>PlanProof AI - Event Planning & Crisis Recovery Assistant</title>
+  <title>PlanProof AI — Event Planning & Crisis Recovery Console</title>
+  <meta name="description" content="AI-powered event planning, pre-mortem risk evaluation, budget allocation, and simulated family council assistant for Indian celebrations.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-  <div class="bg-glow"></div>
+  <div class="bg-ambient" aria-hidden="true"></div>
 
-  <main class="container">
-    <header class="hero">
-      <div class="badge-pill">
-        <span class="status-dot pulsating"></span>
-        <span id="system-badge-text">Milestone 1 · Foundation & Discovery</span>
+  <div class="app-wrapper">
+    <!-- Sidebar Navigation -->
+    <aside class="sidebar" id="sidebar" aria-label="Main Navigation">
+      <div class="sidebar-header">
+        <div class="brand-icon" aria-hidden="true">P</div>
+        <div class="brand-title">PlanProof <span>AI</span></div>
       </div>
-      <h1 class="hero-title">PlanProof <span class="gradient-text">AI</span></h1>
-      <p class="hero-subtitle">
-        AI-powered event planning, pre-mortem risk evaluation, and real-time crisis recovery assistant.
-      </p>
-    </header>
 
-    <section class="card-grid">
-      <!-- Health Card -->
-      <article class="glass-card" id="health-card">
-        <div class="card-header">
-          <div class="icon-wrap">⚡</div>
-          <div>
-            <h2>Service Health</h2>
-            <p class="sub-text">API & Runtime Status</p>
-          </div>
-        </div>
-        <div class="status-indicator">
-          <span class="pill pill-success" id="health-status">Checking...</span>
-        </div>
-        <div class="metric-row">
-          <span class="metric-label">Environment:</span>
-          <span class="metric-val" id="env-val">—</span>
-        </div>
-        <div class="metric-row">
-          <span class="metric-label">Version:</span>
-          <span class="metric-val" id="ver-val">—</span>
-        </div>
-      </article>
-
-      <!-- Dataset Card -->
-      <article class="glass-card" id="dataset-card">
-        <div class="card-header">
-          <div class="icon-wrap">📊</div>
-          <div>
-            <h2>Crisis Repository</h2>
-            <p class="sub-text">Preloaded Recovery Scenarios</p>
-          </div>
-        </div>
-        <div class="status-indicator">
-          <span class="pill pill-success" id="dataset-status">Checking...</span>
-        </div>
-        <div class="metric-row">
-          <span class="metric-label">Scenarios Loaded:</span>
-          <span class="metric-val font-mono" id="scenarios-count">—</span>
-        </div>
-        <div class="metric-row">
-          <span class="metric-label">Severity Range:</span>
-          <span class="metric-val font-mono" id="severity-range">—</span>
-        </div>
-        <div class="metric-row">
-          <span class="metric-label">Budget Splits:</span>
-          <span class="metric-val" id="budget-status">—</span>
-        </div>
-        <div class="metric-row">
-          <span class="metric-label">Vendor Catalogs:</span>
-          <span class="metric-val" id="vendor-status">—</span>
-        </div>
-      </article>
-    </section>
-
-    <!-- Crisis Categories Overview -->
-    <section class="glass-card categories-card">
-      <div class="card-header">
-        <div class="icon-wrap">🛡️</div>
-        <div>
-          <h2>Available Crisis Scenarios</h2>
-          <p class="sub-text">Validated incident types ready for recovery playbooks</p>
-        </div>
-      </div>
-      <div class="tag-cloud" id="crisis-types-cloud">
-        <span class="tag-skeleton">Loading taxonomy...</span>
-      </div>
-    </section>
-
-    <footer class="footer">
-      <div class="actions">
-        <button id="btn-refresh" class="btn-primary" type="button">
-          Refresh Status
-        </button>
-        <a href="/docs" class="btn-secondary" target="_blank" rel="noopener">
-          API Documentation (Swagger)
+      <nav class="sidebar-nav">
+        <a href="#overview" class="nav-link active" data-view="overview" id="nav-overview">
+          <span class="nav-icon" aria-hidden="true">📊</span>
+          <span>Overview</span>
         </a>
-      </div>
-      <p class="footer-note">PlanProof AI · Hackathon Foundation · Python 3.11+ & FastAPI</p>
-    </footer>
-  </main>
+        <a href="#event-details" class="nav-link" data-view="event-details" id="nav-event-details">
+          <span class="nav-icon" aria-hidden="true">📋</span>
+          <span>Event Details</span>
+        </a>
+        <a href="#budget" class="nav-link" data-view="budget" id="nav-budget">
+          <span class="nav-icon" aria-hidden="true">💰</span>
+          <span>Budget Planner</span>
+        </a>
+        <a href="#timeline" class="nav-link" data-view="timeline" id="nav-timeline">
+          <span class="nav-icon" aria-hidden="true">⏳</span>
+          <span>Timeline</span>
+        </a>
+        <a href="#vendors" class="nav-link" data-view="vendors" id="nav-vendors">
+          <span class="nav-icon" aria-hidden="true">🤝</span>
+          <span>Vendor Checklist</span>
+        </a>
+        <a href="#ideas" class="nav-link" data-view="ideas" id="nav-ideas">
+          <span class="nav-icon" aria-hidden="true">💡</span>
+          <span>Event Ideas</span>
+        </a>
+        <a href="#risks" class="nav-link" data-view="risks" id="nav-risks">
+          <span class="nav-icon" aria-hidden="true">🛡️</span>
+          <span>Risk Analysis</span>
+        </a>
+        <a href="#council" class="nav-link" data-view="council" id="nav-council">
+          <span class="nav-icon" aria-hidden="true">👥</span>
+          <span>Family Council</span>
+        </a>
+      </nav>
 
+      <div class="sidebar-footer">
+        <div class="sidebar-footer-text">PlanProof AI Console · v0.1.0</div>
+        <div class="sidebar-footer-text">Deterministic Heuristics + Gemini AI</div>
+      </div>
+    </aside>
+
+    <!-- Main Content Area -->
+    <div class="main-content">
+      <!-- Top Sticky Header -->
+      <header class="top-header" role="banner">
+        <div class="header-left">
+          <button class="btn-menu-toggle" id="btn-sidebar-toggle" aria-label="Toggle navigation menu" type="button">
+            ☰
+          </button>
+          
+          <div class="event-selector-wrap">
+            <label for="event-select-dropdown" class="sr-only">Active Event</label>
+            <select id="event-select-dropdown" class="event-select" aria-label="Select active event">
+              <option value="" disabled selected>Loading events...</option>
+            </select>
+          </div>
+
+          <div class="active-event-badge" id="active-event-badge" style="display: none;">
+            <span class="dot"></span>
+            <span id="active-event-title-text">—</span>
+          </div>
+        </div>
+
+        <div class="header-right">
+          <div class="ai-status-pill" id="ai-status-badge" title="AI Orchestration Engine Status">
+            <span class="status-dot"></span>
+            <span id="ai-status-text">AI: Checking</span>
+          </div>
+
+          <button class="btn btn-cyan btn-sm" id="btn-open-create-event" type="button">
+            <span>+</span>
+            <span>New Event</span>
+          </button>
+        </div>
+      </header>
+
+      <!-- View Sections Viewport -->
+      <main class="content-area" id="main-viewport" role="main">
+
+        <!-- 1. OVERVIEW VIEW -->
+        <section id="view-overview" class="view-section active" aria-labelledby="overview-heading">
+          <div id="overview-content">
+            <!-- Dynamic overview populated by JS -->
+          </div>
+        </section>
+
+        <!-- 2. EVENT DETAILS VIEW -->
+        <section id="view-event-details" class="view-section" aria-labelledby="event-details-heading">
+          <div id="event-details-content">
+            <!-- Dynamic event details populated by JS -->
+          </div>
+        </section>
+
+        <!-- 3. BUDGET PLANNER VIEW -->
+        <section id="view-budget" class="view-section" aria-labelledby="budget-heading">
+          <div id="budget-content">
+            <!-- Dynamic budget populated by JS -->
+          </div>
+        </section>
+
+        <!-- 4. TIMELINE VIEW -->
+        <section id="view-timeline" class="view-section" aria-labelledby="timeline-heading">
+          <div id="timeline-content">
+            <!-- Dynamic timeline populated by JS -->
+          </div>
+        </section>
+
+        <!-- 5. VENDOR CHECKLIST VIEW -->
+        <section id="view-vendors" class="view-section" aria-labelledby="vendors-heading">
+          <div id="vendors-content">
+            <!-- Dynamic vendor checklist populated by JS -->
+          </div>
+        </section>
+
+        <!-- 6. EVENT IDEAS VIEW -->
+        <section id="view-ideas" class="view-section" aria-labelledby="ideas-heading">
+          <div id="ideas-content">
+            <!-- Dynamic ideas populated by JS -->
+          </div>
+        </section>
+
+        <!-- 7. RISK ANALYSIS VIEW -->
+        <section id="view-risks" class="view-section" aria-labelledby="risks-heading">
+          <div id="risks-content">
+            <!-- Dynamic risk analysis populated by JS -->
+          </div>
+        </section>
+
+        <!-- 8. FAMILY COUNCIL VIEW -->
+        <section id="view-council" class="view-section" aria-labelledby="council-heading">
+          <div id="council-content">
+            <!-- Dynamic family council populated by JS -->
+          </div>
+        </section>
+
+      </main>
+    </div>
+  </div>
+
+  <!-- MODAL: CREATE NEW EVENT -->
+  <div class="modal-backdrop" id="modal-create-event" role="dialog" aria-modal="true" aria-labelledby="modal-create-title">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 class="modal-title" id="modal-create-title">Plan a New Event</h2>
+        <button type="button" class="btn-close-modal" id="btn-close-create-modal" aria-label="Close dialog">×</button>
+      </div>
+      <form id="form-create-event">
+        <div class="modal-body">
+          <div class="form-grid-2">
+            <div class="form-group">
+              <label for="create-event-type" class="form-label">Event Category *</label>
+              <select id="create-event-type" class="form-select" required>
+                <option value="wedding" selected>Wedding</option>
+                <option value="birthday">Birthday</option>
+                <option value="community_event">Community Event</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="create-event-name" class="form-label">Event Name</label>
+              <input type="text" id="create-event-name" class="form-input" placeholder="e.g. Diya & Kabir's Wedding" maxlength="150">
+            </div>
+          </div>
+
+          <div class="form-grid-3">
+            <div class="form-group">
+              <label for="create-city" class="form-label">City</label>
+              <input type="text" id="create-city" class="form-input" placeholder="e.g. Jaipur, Hyderabad" maxlength="100">
+            </div>
+            <div class="form-group">
+              <label for="create-city-tier" class="form-label">City Tier *</label>
+              <select id="create-city-tier" class="form-select" required>
+                <option value="metro">Metro (Tier 1)</option>
+                <option value="tier2" selected>Tier 2</option>
+                <option value="tier3">Tier 3</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="create-event-date" class="form-label">Event Date</label>
+              <input type="date" id="create-event-date" class="form-input">
+            </div>
+          </div>
+
+          <div class="form-grid-2">
+            <div class="form-group">
+              <label for="create-guest-count" class="form-label">Guest Count * (1 - 2,000)</label>
+              <input type="number" id="create-guest-count" class="form-input" min="1" max="2000" value="250" required>
+            </div>
+            <div class="form-group">
+              <label for="create-budget" class="form-label">Total Budget (INR) * (₹10k - ₹50M)</label>
+              <input type="number" id="create-budget" class="form-input" min="10000" max="50000000" step="5000" value="1500000" required>
+            </div>
+          </div>
+
+          <div class="form-grid-2">
+            <div class="form-group">
+              <label for="create-language" class="form-label">Preferred Language</label>
+              <select id="create-language" class="form-select">
+                <option value="en" selected>English</option>
+                <option value="hi">Hindi (हिन्दी)</option>
+                <option value="te">Telugu (తెలుగు)</option>
+                <option value="ta">Tamil (தமிழ்)</option>
+                <option value="mr">Marathi (मराठी)</option>
+                <option value="gu">Gujarati (ગુજરાતી)</option>
+                <option value="kn">Kannada (ಕನ್ನಡ)</option>
+                <option value="bn">Bengali (বাংলা)</option>
+                <option value="pa">Punjabi (ਪੰਜਾਬੀ)</option>
+              </select>
+            </div>
+            <div class="form-group" style="display: flex; align-items: center; gap: 0.5rem; padding-top: 1.8rem;">
+              <input type="checkbox" id="create-in-progress" style="width: 18px; height: 18px; accent-color: var(--electric-cyan);">
+              <label for="create-in-progress" class="form-label" style="margin: 0; cursor: pointer;">Event already ongoing / in-progress</label>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label for="create-theme-notes" class="form-label">Theme, Style, or Cultural Notes (Max 500 chars)</label>
+            <textarea id="create-theme-notes" class="form-textarea" placeholder="Describe theme, family rituals, decorative atmosphere, or special preferences..." maxlength="500"></textarea>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" id="btn-cancel-create-modal">Cancel</button>
+          <button type="submit" class="btn btn-cyan" id="btn-submit-create-event">Create & Plan Event</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- MODAL: EDIT VENDOR CHECKLIST ITEM -->
+  <div class="modal-backdrop" id="modal-edit-vendor" role="dialog" aria-modal="true" aria-labelledby="modal-vendor-title">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 class="modal-title" id="modal-vendor-title">Update Vendor Task</h2>
+        <button type="button" class="btn-close-modal" id="btn-close-vendor-modal" aria-label="Close dialog">×</button>
+      </div>
+      <form id="form-edit-vendor">
+        <input type="hidden" id="edit-vendor-item-id">
+        <div class="modal-body">
+          <div class="form-group">
+            <label class="form-label">Task</label>
+            <div id="edit-vendor-task-title" style="font-weight: 700; color: var(--text-primary); margin-bottom: 0.5rem;">—</div>
+            <div id="edit-vendor-task-desc" style="font-size: 0.85rem; color: var(--text-muted);">—</div>
+          </div>
+
+          <div class="form-grid-2">
+            <div class="form-group">
+              <label for="edit-vendor-status" class="form-label">Task Execution Status</label>
+              <select id="edit-vendor-status" class="form-select">
+                <option value="pending">Pending</option>
+                <option value="in_progress">In Progress</option>
+                <option value="completed">Completed</option>
+                <option value="skipped">Skipped</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="edit-vendor-priority" class="form-label">Priority</label>
+              <select id="edit-vendor-priority" class="form-select">
+                <option value="high">High</option>
+                <option value="medium">Medium</option>
+                <option value="low">Low</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="form-grid-2">
+            <div class="form-group">
+              <label for="edit-vendor-booking" class="form-label">Booking Progression</label>
+              <select id="edit-vendor-booking" class="form-select">
+                <option value="not_started">Not Started</option>
+                <option value="researching">Researching</option>
+                <option value="contacted">Contacted</option>
+                <option value="booked">Booked</option>
+                <option value="cancelled">Cancelled</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="edit-vendor-name" class="form-label">Assigned Vendor / Business Name</label>
+              <input type="text" id="edit-vendor-name" class="form-input" placeholder="e.g. Royal Palace Caterers" maxlength="100">
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label for="edit-vendor-notes" class="form-label">Coordination Notes (Max 500 chars)</label>
+            <textarea id="edit-vendor-notes" class="form-textarea" placeholder="Add phone contacts, rate quotes, contract review notes..." maxlength="500"></textarea>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" id="btn-cancel-vendor-modal">Cancel</button>
+          <button type="submit" class="btn btn-cyan" id="btn-submit-edit-vendor">Save Changes</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Toast Notifications Container -->
+  <div class="toast-container" id="toast-container" aria-live="polite" aria-atomic="true"></div>
+
+  <!-- Client-side Logic -->
   <script src="/static/app.js"></script>
 </body>
 </html>
