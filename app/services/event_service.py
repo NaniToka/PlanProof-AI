@@ -31,7 +31,10 @@ from app.schemas import (
     EventProfile,
     EventTimelineScheduleResponse,
     EventUpdateRequest,
+    EventVendorChecklistItem,
+    EventVendorChecklistResponse,
     MilestoneStatus,
+    VendorChecklistItemUpdateRequest,
     get_current_ist_date,
     validate_event_date,
 )
@@ -44,6 +47,11 @@ from app.services.budget import (
 from app.services.timeline import (
     generate_event_timeline_schedule,
     get_template_for_event_type,
+)
+from app.services.vendor_service import (
+    calculate_vendor_checklist_summary,
+    generate_event_vendor_checklist,
+    recalculate_checklist_due_dates,
 )
 
 logger = logging.getLogger(__name__)
@@ -164,6 +172,13 @@ class EventService:
             splits_dataset=splits,
         )
 
+        vendor_checklist = generate_event_vendor_checklist(
+            event_id=event_id,
+            event_type=request.event_type,
+            event_date=request.event_date,
+            created_at=now,
+        )
+
         profile = EventProfile(
             event_id=event_id,
             event_type=request.event_type,
@@ -177,6 +192,7 @@ class EventService:
             theme_notes=request.theme_notes,
             is_in_progress=request.is_in_progress,
             budget=budget_outcome.allocations,
+            vendor_checklist=vendor_checklist,
             created_at=now,
             updated_at=now,
         )
@@ -243,6 +259,14 @@ class EventService:
         else:
             new_budget = existing.budget
 
+        # Recalculate vendor checklist due dates if event_date changed
+        if new_date != existing.event_date:
+            updated_checklist = recalculate_checklist_due_dates(
+                existing.vendor_checklist, new_date
+            )
+        else:
+            updated_checklist = list(existing.vendor_checklist)
+
         now = datetime.now(timezone.utc)
 
         # Build updated profile preserving server-generated fields
@@ -260,6 +284,7 @@ class EventService:
             is_in_progress=new_in_progress,
             budget=new_budget,
             milestone_statuses=dict(existing.milestone_statuses),
+            vendor_checklist=updated_checklist,
             created_at=existing.created_at,  # Immutable
             updated_at=now,  # Updated timestamp
         )
@@ -378,6 +403,7 @@ class EventService:
             is_in_progress=profile.is_in_progress,
             budget=rebalance_resp.allocations,
             milestone_statuses=dict(profile.milestone_statuses),
+            vendor_checklist=list(profile.vendor_checklist),
             created_at=profile.created_at,
             updated_at=now,
         )
@@ -476,6 +502,7 @@ class EventService:
             is_in_progress=profile.is_in_progress,
             budget=profile.budget,
             milestone_statuses=updated_statuses,
+            vendor_checklist=list(profile.vendor_checklist),
             created_at=profile.created_at,
             updated_at=now,
         )
@@ -504,5 +531,193 @@ class EventService:
             status=status,
             is_overdue=is_overdue,
         )
+
+    async def get_event_vendor_checklist(
+        self,
+        event_id: str,
+    ) -> EventVendorChecklistResponse | None:
+        """Retrieve or lazily initialize the vendor checklist for a saved event.
+
+        Args:
+            event_id: Unique event identifier.
+
+        Returns:
+            EventVendorChecklistResponse if event exists, None otherwise.
+        """
+        profile = await self.store.get(event_id)
+        if profile is None:
+            return None
+
+        # Lazily generate checklist if not already present on profile
+        if not profile.vendor_checklist:
+            checklist = generate_event_vendor_checklist(
+                event_id=profile.event_id,
+                event_type=profile.event_type,
+                event_date=profile.event_date,
+            )
+            now = datetime.now(timezone.utc)
+            updated_profile = EventProfile(
+                event_id=profile.event_id,
+                event_type=profile.event_type,
+                event_name=profile.event_name,
+                city=profile.city,
+                city_tier=profile.city_tier,
+                event_date=profile.event_date,
+                guest_count=profile.guest_count,
+                total_budget_inr=profile.total_budget_inr,
+                language=profile.language,
+                theme_notes=profile.theme_notes,
+                is_in_progress=profile.is_in_progress,
+                budget=profile.budget,
+                milestone_statuses=profile.milestone_statuses,
+                vendor_checklist=checklist,
+                created_at=profile.created_at,
+                updated_at=now,
+            )
+            await self.store.update(event_id, updated_profile)
+            profile = updated_profile
+
+        summary = calculate_vendor_checklist_summary(profile.vendor_checklist)
+        warnings: list[str] = []
+        if profile.event_date is None:
+            warnings.append(
+                "Event date is not set on this profile. Add an event_date via "
+                f"PATCH /api/v1/events/{event_id} to derive calendar deadlines for checklist tasks."
+            )
+
+        now_utc = datetime.now(timezone.utc)
+        return EventVendorChecklistResponse(
+            event_id=profile.event_id,
+            event_type=profile.event_type,
+            event_date=profile.event_date,
+            generated_at=now_utc,
+            summary=summary,
+            items=profile.vendor_checklist,
+            warnings=warnings,
+        )
+
+    async def update_vendor_checklist_item(
+        self,
+        event_id: str,
+        item_id: str,
+        request: VendorChecklistItemUpdateRequest,
+    ) -> EventVendorChecklistItem | None:
+        """Apply updates to a specific vendor checklist item in ephemeral storage.
+
+        Args:
+            event_id: Unique event identifier.
+            item_id: Checklist item identifier.
+            request: Validated fields to update.
+
+        Returns:
+            Updated EventVendorChecklistItem, or None if event not found.
+
+        Raises:
+            KeyError: If item_id does not exist in the event's checklist.
+        """
+        profile = await self.store.get(event_id)
+        if profile is None:
+            return None
+
+        # Lazily initialize checklist if empty
+        if not profile.vendor_checklist:
+            checklist = generate_event_vendor_checklist(
+                event_id=profile.event_id,
+                event_type=profile.event_type,
+                event_date=profile.event_date,
+            )
+            profile = EventProfile(
+                event_id=profile.event_id,
+                event_type=profile.event_type,
+                event_name=profile.event_name,
+                city=profile.city,
+                city_tier=profile.city_tier,
+                event_date=profile.event_date,
+                guest_count=profile.guest_count,
+                total_budget_inr=profile.total_budget_inr,
+                language=profile.language,
+                theme_notes=profile.theme_notes,
+                is_in_progress=profile.is_in_progress,
+                budget=profile.budget,
+                milestone_statuses=profile.milestone_statuses,
+                vendor_checklist=checklist,
+                created_at=profile.created_at,
+                updated_at=datetime.now(timezone.utc),
+            )
+            await self.store.update(event_id, profile)
+
+        matching_item = next(
+            (item for item in profile.vendor_checklist if item.id == item_id),
+            None,
+        )
+        if matching_item is None:
+            raise KeyError(
+                f"Vendor checklist item '{item_id}' not found for event '{event_id}'."
+            )
+
+        update_data = request.model_dump(exclude_unset=True)
+        if not update_data:
+            return matching_item
+
+        now = datetime.now(timezone.utc)
+        new_status = update_data.get("status", matching_item.status)
+        new_priority = update_data.get("priority", matching_item.priority)
+        new_booking_status = update_data.get(
+            "booking_status", matching_item.booking_status
+        )
+        new_notes = update_data.get("notes", matching_item.notes)
+        new_vendor_name = update_data.get("vendor_name", matching_item.vendor_name)
+
+        updated_item = EventVendorChecklistItem(
+            id=matching_item.id,
+            category=matching_item.category,
+            title=matching_item.title,
+            description=matching_item.description,
+            status=new_status,
+            due_date=matching_item.due_date,
+            days_before_event=matching_item.days_before_event,
+            priority=new_priority,
+            notes=new_notes,
+            vendor_name=new_vendor_name,
+            booking_status=new_booking_status,
+            created_at=matching_item.created_at,
+            updated_at=now,
+        )
+
+        updated_checklist = [
+            updated_item if i.id == item_id else i for i in profile.vendor_checklist
+        ]
+
+        updated_profile = EventProfile(
+            event_id=profile.event_id,
+            event_type=profile.event_type,
+            event_name=profile.event_name,
+            city=profile.city,
+            city_tier=profile.city_tier,
+            event_date=profile.event_date,
+            guest_count=profile.guest_count,
+            total_budget_inr=profile.total_budget_inr,
+            language=profile.language,
+            theme_notes=profile.theme_notes,
+            is_in_progress=profile.is_in_progress,
+            budget=profile.budget,
+            milestone_statuses=profile.milestone_statuses,
+            vendor_checklist=updated_checklist,
+            created_at=profile.created_at,
+            updated_at=now,
+        )
+        await self.store.update(event_id, updated_profile)
+
+        # Privacy-safe logging: Never log user-entered notes or vendor contact names
+        logger.info(
+            "Updated vendor checklist item %s (status=%s, booking=%s) for event %s",
+            item_id,
+            updated_item.status.value,
+            updated_item.booking_status.value,
+            event_id,
+        )
+
+        return updated_item
+
 
 

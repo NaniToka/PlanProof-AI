@@ -46,6 +46,15 @@ from app.services.timeline import (
     generate_event_timeline_schedule,
     get_template_for_event_type,
 )
+from app.services.vendor_service import (
+    BIRTHDAY_VENDOR_TEMPLATE,
+    COMMUNITY_VENDOR_TEMPLATE,
+    WEDDING_VENDOR_TEMPLATE,
+    calculate_vendor_checklist_summary,
+    generate_event_vendor_checklist,
+    get_vendor_template_for_event_type,
+    recalculate_checklist_due_dates,
+)
 
 __all__ = [
     "AIOrchestrator",
@@ -68,6 +77,13 @@ __all__ = [
     "WEDDING_TIMELINE_TEMPLATE",
     "BIRTHDAY_TIMELINE_TEMPLATE",
     "COMMUNITY_EVENT_TIMELINE_TEMPLATE",
+    "generate_event_vendor_checklist",
+    "calculate_vendor_checklist_summary",
+    "get_vendor_template_for_event_type",
+    "recalculate_checklist_due_dates",
+    "WEDDING_VENDOR_TEMPLATE",
+    "BIRTHDAY_VENDOR_TEMPLATE",
+    "COMMUNITY_VENDOR_TEMPLATE",
     "BudgetConstraintError",
     "BudgetEngineError",
     "BudgetValidationError",

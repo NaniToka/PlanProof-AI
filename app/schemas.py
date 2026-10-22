@@ -98,6 +98,47 @@ class MilestoneStatus(StrEnum):
     COMPLETED = "completed"
 
 
+class VendorChecklistCategory(StrEnum):
+    """Functional categories for event vendor coordination tasks."""
+
+    VENUE_PERMISSIONS = "venue_permissions"
+    CATERING_REFRESHMENTS = "catering_refreshments"
+    DECORATION_SETUP = "decoration_setup"
+    PHOTOGRAPHY_VIDEOGRAPHY = "photography_videography"
+    ATTIRE_BEAUTY = "attire_beauty"
+    ENTERTAINMENT_EQUIPMENT = "entertainment_equipment"
+    TRANSPORT_LOGISTICS = "transport_logistics"
+    INVITATIONS_COORDINATION = "invitations_coordination"
+    CLEANUP_POST_EVENT = "cleanup_post_event"
+
+
+class VendorChecklistStatus(StrEnum):
+    """Progress status of a vendor checklist task."""
+
+    PENDING = "pending"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    SKIPPED = "skipped"
+
+
+class VendorBookingStatus(StrEnum):
+    """User-recorded booking progression for a vendor category."""
+
+    NOT_STARTED = "not_started"
+    RESEARCHING = "researching"
+    CONTACTED = "contacted"
+    BOOKED = "booked"
+    CANCELLED = "cancelled"
+
+
+class VendorChecklistPriority(StrEnum):
+    """Priority level for vendor checklist tasks."""
+
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+
+
 
 # ==============================================================================
 # 2. Dataset Schemas (Preloaded Data Integrity)
@@ -624,6 +665,49 @@ class EventBudgetBreakdown(BaseModel):
         return default
 
 
+class EventVendorChecklistItem(BaseModel):
+    """Event-specific vendor checklist item tracking tasks, deadlines, and coordination."""
+
+    id: str = Field(..., min_length=1, max_length=50, description="Stable unique item identifier")
+    category: VendorChecklistCategory = Field(..., description="Vendor coordination category")
+    title: str = Field(..., min_length=1, max_length=150, description="Short task name")
+    description: str = Field(..., min_length=1, max_length=500, description="Concise task description")
+    status: VendorChecklistStatus = Field(
+        default=VendorChecklistStatus.PENDING,
+        description="Task progress status (pending, in_progress, completed, skipped)",
+    )
+    due_date: date | None = Field(
+        default=None, description="Target calendar deadline derived from event date"
+    )
+    days_before_event: int | None = Field(
+        default=None, ge=0, description="Lead time in days before event date"
+    )
+    priority: VendorChecklistPriority = Field(
+        default=VendorChecklistPriority.MEDIUM, description="Task urgency level"
+    )
+    notes: str | None = Field(
+        default=None, max_length=500, description="Optional user-entered coordination notes"
+    )
+    vendor_name: str | None = Field(
+        default=None, max_length=100, description="Optional user-entered vendor business or contact name"
+    )
+    booking_status: VendorBookingStatus = Field(
+        default=VendorBookingStatus.NOT_STARTED,
+        description="User-recorded booking progression (never auto-set to booked)",
+    )
+    created_at: datetime = Field(..., description="Creation timestamp in UTC")
+    updated_at: datetime = Field(..., description="Last update timestamp in UTC")
+
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    @field_validator("notes", "vendor_name", mode="before")
+    @classmethod
+    def strip_and_empty_to_none(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            stripped = value.strip()
+            return stripped if stripped else None
+        return value
+
 
 class EventProfile(BaseModel):
     """Complete domain model representing an event profile."""
@@ -650,6 +734,9 @@ class EventProfile(BaseModel):
     )
     milestone_statuses: dict[str, MilestoneStatus] = Field(
         default_factory=dict, description="Completion status overrides for timeline milestones"
+    )
+    vendor_checklist: list[EventVendorChecklistItem] = Field(
+        default_factory=list, description="Event-specific vendor checklist and coordination items"
     )
     created_at: datetime = Field(..., description="Server creation timestamp (UTC)")
     updated_at: datetime = Field(..., description="Server last modification timestamp (UTC)")
@@ -840,6 +927,71 @@ class MilestoneStatusUpdateRequest(BaseModel):
     )
 
     model_config = ConfigDict(extra="forbid")
+
+
+class VendorChecklistSummary(BaseModel):
+    """Aggregated status counts for vendor checklist items."""
+
+    total_items: int = Field(..., ge=0, description="Total checklist items")
+    pending: int = Field(default=0, ge=0, description="Count of pending tasks")
+    in_progress: int = Field(default=0, ge=0, description="Count of in-progress tasks")
+    completed: int = Field(default=0, ge=0, description="Count of completed tasks")
+    skipped: int = Field(default=0, ge=0, description="Count of skipped tasks")
+    booking_statuses: dict[str, int] = Field(
+        default_factory=dict, description="Counts of user-recorded booking statuses"
+    )
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class EventVendorChecklistResponse(BaseModel):
+    """Response envelope for event vendor checklist and coordination workflow."""
+
+    event_id: str = Field(..., description="Server-generated event identifier")
+    event_type: EventType = Field(..., description="Event type category")
+    event_date: date | None = Field(default=None, description="Event scheduled date")
+    generated_at: datetime = Field(..., description="Timestamp of generation/response in UTC")
+    summary: VendorChecklistSummary = Field(..., description="Summary of item and booking statuses")
+    items: list[EventVendorChecklistItem] = Field(
+        default_factory=list, description="Event-specific vendor coordination items"
+    )
+    warnings: list[str] = Field(
+        default_factory=list, description="Advisory messages"
+    )
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class VendorChecklistItemUpdateRequest(BaseModel):
+    """Payload to update an event vendor checklist item."""
+
+    status: VendorChecklistStatus | None = Field(
+        default=None, description="New task status (pending, in_progress, completed, skipped)"
+    )
+    notes: str | None = Field(
+        default=None, max_length=500, description="User-entered coordination notes (max 500 characters)"
+    )
+    priority: VendorChecklistPriority | None = Field(
+        default=None, description="New task priority (low, medium, high)"
+    )
+    vendor_name: str | None = Field(
+        default=None, max_length=100, description="User-entered vendor name (max 100 characters)"
+    )
+    booking_status: VendorBookingStatus | None = Field(
+        default=None,
+        description="New booking status (not_started, researching, contacted, booked, cancelled)",
+    )
+
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("notes", "vendor_name", mode="before")
+    @classmethod
+    def strip_and_empty_to_none(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            stripped = value.strip()
+            return stripped if stripped else None
+        return value
+
 
 
 

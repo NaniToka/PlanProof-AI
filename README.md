@@ -122,6 +122,8 @@ PlanProof AI supports three explicit AI operation modes controlled by the `AI_MO
 | `POST` | `/api/v1/events/{event_id}/budget/rebalance` | Rebalance saved event's budget preserving essential categories |
 | `GET` | `/api/v1/events/{event_id}/timeline` | Retrieve deterministic timeline and milestone checklist with calendar deadlines |
 | `PATCH` | `/api/v1/events/{event_id}/timeline/milestones/{milestone_id}` | Update milestone completion status (`pending` or `completed`) |
+| `GET` | `/api/v1/events/{event_id}/vendors/checklist` | Retrieve event-specific vendor checklist and coordination status summary |
+| `PATCH` | `/api/v1/events/{event_id}/vendors/checklist/{item_id}` | Update task status, notes, priority, vendor name, or booking status |
 | `POST` | `/api/v1/validate-event` | Strict domain validation for event planning requests |
 | `POST` | `/api/v1/budget/calculate` | Deterministic 8-category budget allocation (Hamilton-Hare method) |
 | `POST` | `/api/v1/budget/rebalance` | Budget rebalancing with essential category preservation |
@@ -295,7 +297,140 @@ Each milestone in the schedule contains:
 
 ---
 
+## Event Vendor Checklist & Coordination Workflow
+
+PlanProof AI provides a deterministic, event-specific vendor coordination checklist and tracking workflow for weddings, birthdays, and community events.
+
+> **Important Marketplace & Availability Disclaimer:**
+> This feature is strictly a **vendor planning, checklist, and coordination tracker**. It is **not** a real vendor marketplace, directory, or commercial reservation platform. PlanProof AI **never** invents real vendor businesses, phone numbers, contact details, pricing quotations, or confirmed reservations. All vendor names, contact statuses, and notes reflect user-recorded information only.
+
+### 1. Supported Event Types & Tailored Templates
+Checklist tasks are calibrated to the celebration type, avoiding irrelevant tasks:
+- **Wedding (`wedding`)** — 9 comprehensive tasks:
+  - `VCL-WED-01` (`venue_permissions`, 150 days prior, High): Hall/lawn reservation & municipal sound curfew permissions.
+  - `VCL-WED-02` (`catering_refreshments`, 120 days prior, High): Food tasting, regional live counters, guaranteed guest plate count.
+  - `VCL-WED-03` (`photography_videography`, 90 days prior, High): Candid photo/video crew, drone permits, album delivery terms.
+  - `VCL-WED-04` (`attire_beauty`, 75 days prior, Medium): Lehenga/sherwani tailoring sessions & bridal makeup artist bookings.
+  - `VCL-WED-05` (`decoration_setup`, 60 days prior, Medium): Stage layout, mandap floral installations, entrance arch, backup power.
+  - `VCL-WED-06` (`invitations_coordination`, 60 days prior, Medium): Formal wedding card printing, RSVP list setup, digital dispatch.
+  - `VCL-WED-07` (`entertainment_equipment`, 45 days prior, Medium): DJ console, sangeet audio setup, traditional dhol/shehnai welcome artists.
+  - `VCL-WED-08` (`transport_logistics`, 30 days prior, Medium): Outstation guest hotel room blocks & airport/station shuttles.
+  - `VCL-WED-09` (`cleanup_post_event`, 1 day prior, High): Mandap teardown, floral composting, venue deposit settlement.
+- **Birthday (`birthday`)** — 8 focused tasks (no wedding-specific attire or mandap):
+  - `VCL-BDY-01` (`venue_permissions`, 21 days prior, High): Party hall, restaurant room, or clubhouse booking with cake refrigeration.
+  - `VCL-BDY-02` (`invitations_coordination`, 14 days prior, Medium): Digital WhatsApp invitation cards and parent RSVP headcount tracking.
+  - `VCL-BDY-03` (`photography_videography`, 14 days prior, Low): Cake cutting highlights and family candid photo coverage.
+  - `VCL-BDY-04` (`catering_refreshments`, 12 days prior, High): Custom themed tier birthday cake, kid-friendly buffet finger foods.
+  - `VCL-BDY-05` (`entertainment_equipment`, 10 days prior, Medium): Game host, mascot/magician, party music sound speaker.
+  - `VCL-BDY-06` (`decoration_setup`, 7 days prior, Medium): Theme balloon arch garland, personalized banner, photo booth frame.
+  - `VCL-BDY-07` (`transport_logistics`, 3 days prior, Medium): Procure and assemble age-appropriate return gift favor bags.
+  - `VCL-BDY-08` (`cleanup_post_event`, 1 day prior, High): Personal gift packing, balloon teardown, venue cleanup inspection.
+- **Community Event (`community_event`)** — 8 civic coordination tasks (no bridal attire; focus on municipal NOCs, crowd safety, PA audio, volunteers):
+  - `VCL-COM-01` (`venue_permissions`, 45 days prior, High): Community ground/auditorium, police NOC, sound permit, fire clearance.
+  - `VCL-COM-02` (`entertainment_equipment`, 30 days prior, High): Heavy-duty PA audio console, microphones, diesel generator backup.
+  - `VCL-COM-03` (`invitations_coordination`, 21 days prior, Medium): Society circulars, WhatsApp broadcasts, neighborhood banner posters.
+  - `VCL-COM-04` (`decoration_setup`, 14 days prior, High): Weatherproof shamiana tent canopy, folding chairs, registration counter.
+  - `VCL-COM-05` (`transport_logistics`, 14 days prior, Medium): Volunteer marshal badges, traffic/parking lanes, wheelchair/elderly ramp routes.
+  - `VCL-COM-06` (`catering_refreshments`, 10 days prior, High): Certified drinking water cans, compostable cups, community meal/prasad.
+  - `VCL-COM-07` (`photography_videography`, 7 days prior, Low): Documentation photographer for VIP felicitations, crowd moments, archives.
+  - `VCL-COM-08` (`cleanup_post_event`, 1 day prior, High): Eco waste segregation bins, volunteer cleanup squad, grounds restoration.
+
+### 2. Item Fields & Status Tracking
+Every checklist item tracks both execution progress and user-recorded vendor booking:
+- `status`: Controlled task progress (`pending`, `in_progress`, `completed`, `skipped`). Defaults to `pending`.
+- `booking_status`: User-recorded vendor progression (`not_started`, `researching`, `contacted`, `booked`, `cancelled`). Defaults to `not_started`. **Never automatically marked as booked.**
+- `vendor_name`: Optional user-entered name (max 100 characters). Defaults to `null`.
+- `notes`: Optional user-entered coordination notes (max 500 characters). Defaults to `null`.
+- `due_date`: Calendar date derived from `event_date - timedelta(days=days_before_event)`. Set to `null` if the event does not have an `event_date`.
+- `priority`: Task urgency level (`low`, `medium`, `high`).
+- `created_at` / `updated_at`: Server-managed UTC ISO 8601 timestamps.
+
+### 3. API Endpoints
+
+#### `GET /api/v1/events/{event_id}/vendors/checklist`
+Retrieves or lazily initializes the event-specific vendor checklist and summary.
+- Returns `200 OK` with checklist items, status summary breakdown, and advisory warnings (e.g. if `event_date` is missing).
+- Returns `404 Not Found` if `event_id` is invalid.
+- Repeated GET requests return the existing checklist and do not create duplicate items.
+
+#### `PATCH /api/v1/events/{event_id}/vendors/checklist/{item_id}`
+Updates permitted fields on an individual checklist item.
+- Permitted body fields: `status`, `notes`, `priority`, `vendor_name`, `booking_status`.
+- Disallowed fields (`id`, `category`, `due_date`, `created_at`, `updated_at`) are rejected with `422 Unprocessable Entity` (`extra="forbid"`).
+- Returns `404 Not Found` if either `event_id` or `item_id` does not exist.
+
+### 4. Due Date Rules & Date Recalculation
+- **Fixed Dates**: When `event_date` is known, `due_date` is deterministically computed via standard calendar arithmetic.
+- **Missing Event Date**: If `event_date` is omitted, all items receive `due_date: null` with an explanatory advisory warning. No artificial dates are fabricated.
+- **Date Updates**: When `event_date` is updated via `PATCH /api/v1/events/{event_id}`, all checklist item due dates are automatically recalculated to align with the new event date, while strictly preserving user notes, vendor names, priorities, and booking statuses.
+
+### 5. Storage & Persistence Limitations
+- Stored in ephemeral application memory (`EventStore`).
+- Vendor checklist items and their user-edited states are preserved across profile metadata updates and budget rebalancing requests.
+- All stored state is lost when the server process terminates or restarts.
+
+### 6. Sample Checklist Response
+
+```json
+{
+  "event_id": "EV-9F8E7D6C5B4A",
+  "event_type": "wedding",
+  "event_date": "2027-11-20",
+  "generated_at": "2026-10-22T17:00:00Z",
+  "summary": {
+    "total_items": 9,
+    "pending": 8,
+    "in_progress": 0,
+    "completed": 1,
+    "skipped": 0,
+    "booking_statuses": {
+      "not_started": 8,
+      "researching": 0,
+      "contacted": 0,
+      "booked": 1,
+      "cancelled": 0
+    }
+  },
+  "items": [
+    {
+      "id": "VCL-WED-01",
+      "category": "venue_permissions",
+      "title": "Reserve wedding banquet hall / lawn & mandap premises",
+      "description": "Inspect venue capacity, negotiate dining & mandap zones, verify advance terms, and secure municipal sound permissions.",
+      "status": "completed",
+      "due_date": "2027-06-23",
+      "days_before_event": 150,
+      "priority": "high",
+      "notes": "Contract signed with Royal Orchid Lawns; 25% booking advance paid.",
+      "vendor_name": "Royal Orchid Lawns",
+      "booking_status": "booked",
+      "created_at": "2026-10-22T17:00:00Z",
+      "updated_at": "2026-10-22T17:05:00Z"
+    },
+    {
+      "id": "VCL-WED-02",
+      "category": "catering_refreshments",
+      "title": "Contract wedding caterer and finalize multi-meal menus",
+      "description": "Sample food tastings, lock in regional live counters, guaranteed guest plate count, and service staff ratios.",
+      "status": "pending",
+      "due_date": "2027-07-23",
+      "days_before_event": 120,
+      "priority": "high",
+      "notes": null,
+      "vendor_name": null,
+      "booking_status": "not_started",
+      "created_at": "2026-10-22T17:00:00Z",
+      "updated_at": "2026-10-22T17:00:00Z"
+    }
+  ],
+  "warnings": []
+}
+```
+
+---
+
 ## License
 
 This project is licensed under the [MIT License](LICENSE).
+
 

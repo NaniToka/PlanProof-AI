@@ -36,10 +36,13 @@ from app.schemas import (
     EventTimelineScheduleResponse,
     EventUpdateRequest,
     EventValidationResponse,
+    EventVendorChecklistItem,
+    EventVendorChecklistResponse,
     HealthResponse,
     MilestoneStatusUpdateRequest,
     PreMortemRisk,
     StandardErrorResponse,
+    VendorChecklistItemUpdateRequest,
 )
 from app.services.ai_orchestrator import AIOrchestrator
 from app.services.event_service import EventService, EventStore
@@ -647,6 +650,69 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 detail=f"Event profile '{event_id}' not found.",
             )
         return milestone
+
+    @app.get(
+        "/api/v1/events/{event_id}/vendors/checklist",
+        response_model=EventVendorChecklistResponse,
+        responses={
+            404: {"model": StandardErrorResponse, "description": "Event profile not found"},
+        },
+        tags=["Vendors", "Events"],
+        summary="Retrieve event-specific vendor checklist and coordination summary",
+    )
+    async def get_event_vendor_checklist(
+        event_id: str,
+        service: EventService = Depends(get_event_service),
+    ) -> EventVendorChecklistResponse:
+        """Retrieve or lazily initialize the vendor coordination checklist for an event."""
+        checklist = await service.get_event_vendor_checklist(event_id)
+        if checklist is None:
+            raise StarletteHTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Event profile '{event_id}' not found.",
+            )
+        return checklist
+
+    @app.patch(
+        "/api/v1/events/{event_id}/vendors/checklist/{item_id}",
+        response_model=EventVendorChecklistItem,
+        responses={
+            404: {"model": StandardErrorResponse, "description": "Event or checklist item not found"},
+            422: {"model": StandardErrorResponse, "description": "Validation error"},
+        },
+        tags=["Vendors", "Events"],
+        summary="Update status, notes, priority, or user-provided vendor details on a checklist item",
+    )
+    async def update_vendor_checklist_item(
+        event_id: str,
+        item_id: str,
+        request_data: VendorChecklistItemUpdateRequest,
+        service: EventService = Depends(get_event_service),
+    ) -> EventVendorChecklistItem:
+        """Update permitted fields (status, notes, priority, vendor_name, booking_status) on a checklist item."""
+        try:
+            item = await service.update_vendor_checklist_item(
+                event_id=event_id,
+                item_id=item_id,
+                request=request_data,
+            )
+        except KeyError as exc:
+            raise StarletteHTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=str(exc).strip("'"),
+            ) from exc
+        except ValueError as exc:
+            raise StarletteHTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=str(exc),
+            ) from exc
+
+        if item is None:
+            raise StarletteHTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Event profile '{event_id}' not found.",
+            )
+        return item
 
     @app.get(
         "/api/v1/ai/status",
