@@ -114,6 +114,10 @@ PlanProof AI supports three explicit AI operation modes controlled by the `AI_MO
 | `GET` | `/health` | Application liveness and version check |
 | `GET` | `/api/v1/data-status` | Safe metadata regarding loaded crisis scenarios & catalogs |
 | `GET` | `/api/v1/ai/status` | Gemini AI integration configuration and operation mode status |
+| `POST` | `/api/v1/events` | Create event profile with automatic deterministic budget allocation |
+| `GET` | `/api/v1/events/{event_id}` | Retrieve event profile by server-generated ID |
+| `PATCH` | `/api/v1/events/{event_id}` | Partially update event profile with automatic budget recomputation |
+| `GET` | `/api/v1/events` | List active event profiles with pagination |
 | `POST` | `/api/v1/validate-event` | Strict domain validation for event planning requests |
 | `POST` | `/api/v1/budget/calculate` | Deterministic 8-category budget allocation (Hamilton-Hare method) |
 | `POST` | `/api/v1/budget/rebalance` | Budget rebalancing with essential category preservation |

@@ -6,7 +6,7 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, Request, Response, status
+from fastapi import Depends, FastAPI, Query, Request, Response, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
@@ -24,14 +24,19 @@ from app.schemas import (
     BudgetRebalanceRequest,
     BudgetRebalanceResponse,
     DataStatusResponse,
+    EventCreateRequest,
+    EventListResponse,
     EventPlanRequest,
+    EventProfile,
     EventTimelineResponse,
+    EventUpdateRequest,
     EventValidationResponse,
     HealthResponse,
     PreMortemRisk,
     StandardErrorResponse,
 )
 from app.services.ai_orchestrator import AIOrchestrator
+from app.services.event_service import EventService, EventStore
 from app.services.budget import (
     BudgetEngineError,
     calculate_initial_budget,
@@ -84,6 +89,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.ai_orchestrator = AIOrchestrator(
             settings=app_settings, gemini_service=gemini_svc
         )
+
+        # 4. Initialize Event Profile Store & Service
+        event_store = EventStore()
+        app.state.event_store = event_store
+        app.state.event_service = EventService(
+            store=event_store,
+            dataset_repo=repo,
+            settings=app_settings,
+        )
         yield
 
     app = FastAPI(
@@ -97,6 +111,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.gemini_service = gemini_svc_init
     app.state.ai_orchestrator = AIOrchestrator(
         settings=app_settings, gemini_service=gemini_svc_init
+    )
+    event_store_init = EventStore()
+    app.state.event_store = event_store_init
+    app.state.event_service = EventService(
+        store=event_store_init,
+        dataset_repo=None,
+        settings=app_settings,
     )
     if settings is not None:
         app.dependency_overrides[get_settings] = lambda: app_settings
@@ -385,6 +406,119 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             orchestrator = AIOrchestrator(settings=active_settings, gemini_service=svc)
             request.app.state.ai_orchestrator = orchestrator
         return orchestrator
+
+    def get_event_service(
+        request: Request,
+        current_settings: Settings = Depends(get_settings),
+    ) -> EventService:
+        """Dependency resolving application-level event service."""
+        service: EventService | None = getattr(request.app.state, "event_service", None)
+        if service is None:
+            active_settings = getattr(request.app.state, "settings", current_settings)
+            store = getattr(request.app.state, "event_store", None) or EventStore()
+            repo = getattr(request.app.state, "dataset_repo", None)
+            service = EventService(store=store, dataset_repo=repo, settings=active_settings)
+            request.app.state.event_store = store
+            request.app.state.event_service = service
+        return service
+
+    @app.post(
+        "/api/v1/events",
+        response_model=EventProfile,
+        status_code=status.HTTP_201_CREATED,
+        responses={
+            422: {"model": StandardErrorResponse, "description": "Validation failed"},
+        },
+        tags=["Events"],
+        summary="Create a new event profile with deterministic budget allocation",
+    )
+    async def create_event(
+        request_data: EventCreateRequest,
+        service: EventService = Depends(get_event_service),
+    ) -> EventProfile:
+        """Create a new event profile and calculate its initial 8-category budget."""
+        try:
+            return await service.create_event(request_data)
+        except ValueError as exc:
+            raise StarletteHTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=str(exc),
+            ) from exc
+
+    @app.get(
+        "/api/v1/events/{event_id}",
+        response_model=EventProfile,
+        responses={
+            404: {"model": StandardErrorResponse, "description": "Event profile not found"},
+        },
+        tags=["Events"],
+        summary="Retrieve an event profile by event ID",
+    )
+    async def get_event(
+        event_id: str,
+        service: EventService = Depends(get_event_service),
+    ) -> EventProfile:
+        """Retrieve an existing event profile by its server-generated ID."""
+        profile = await service.get_event(event_id)
+        if profile is None:
+            raise StarletteHTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Event profile '{event_id}' not found.",
+            )
+        return profile
+
+    @app.patch(
+        "/api/v1/events/{event_id}",
+        response_model=EventProfile,
+        responses={
+            404: {"model": StandardErrorResponse, "description": "Event profile not found"},
+            422: {"model": StandardErrorResponse, "description": "Validation failed"},
+        },
+        tags=["Events"],
+        summary="Update an existing event profile",
+    )
+    async def update_event(
+        event_id: str,
+        update_data: EventUpdateRequest,
+        service: EventService = Depends(get_event_service),
+    ) -> EventProfile:
+        """Apply partial updates to an event profile and recalculate budget if necessary."""
+        try:
+            profile = await service.update_event(event_id, update_data)
+        except ValueError as exc:
+            raise StarletteHTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=str(exc),
+            ) from exc
+
+        if profile is None:
+            raise StarletteHTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Event profile '{event_id}' not found.",
+            )
+        return profile
+
+    @app.get(
+        "/api/v1/events",
+        response_model=EventListResponse,
+        tags=["Events"],
+        summary="List active event profiles with pagination",
+    )
+    async def list_events(
+        skip: int = Query(default=0, ge=0, description="Number of events to skip"),
+        limit: int = Query(
+            default=50, ge=1, le=100, description="Maximum number of events to return"
+        ),
+        service: EventService = Depends(get_event_service),
+    ) -> EventListResponse:
+        """List event profiles currently stored in the ephemeral memory repository."""
+        events, total = await service.list_events(skip=skip, limit=limit)
+        return EventListResponse(
+            total=total,
+            skip=skip,
+            limit=limit,
+            events=events,
+        )
 
     @app.get(
         "/api/v1/ai/status",

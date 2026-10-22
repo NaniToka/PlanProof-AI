@@ -20,6 +20,10 @@ from app.services.demo_fixtures import (
     get_demo_timeline,
     get_demo_wedding_timeline,
 )
+from app.services.event_service import (
+    EventService,
+    EventStore,
+)
 from app.services.fallback_service import (
     generate_deterministic_crisis_recovery,
     generate_deterministic_family_council,
@@ -38,6 +42,8 @@ from app.services.gemini_service import (
 
 __all__ = [
     "AIOrchestrator",
+    "EventService",
+    "EventStore",
     "FallbackCallable",
     "FallbackProvider",
     "get_demo_birthday_timeline",

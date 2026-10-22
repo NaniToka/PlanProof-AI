@@ -10,9 +10,10 @@ Defines:
 
 import math
 import re
-from datetime import date
+from datetime import date, datetime, timezone
 from enum import StrEnum
 from typing import Any, Generic, TypeVar
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -261,8 +262,83 @@ class VendorChecklistsDataset(BaseModel):
 
 
 # ==============================================================================
-# 3. Event Planning Input Schemas
+# 3. Event Planning Input & Profile Schemas
 # ==============================================================================
+
+INDIA_TZ = ZoneInfo("Asia/Kolkata")
+
+
+def get_current_ist_date() -> date:
+    """Return the current calendar date in Indian Standard Time (IST, UTC+05:30)."""
+    return datetime.now(INDIA_TZ).date()
+
+
+def validate_event_date(
+    event_date: date | None,
+    allow_past: bool = False,
+    reference_date: date | None = None,
+) -> date | None:
+    """Validate that event_date is not in the past unless explicitly allowed.
+
+    Timezone Convention:
+        Indian Standard Time (Asia/Kolkata, UTC+05:30). Dates are validated
+        against the current calendar date in India unless reference_date is supplied.
+
+    Args:
+        event_date: Target date to validate.
+        allow_past: If True, allows past dates (e.g. for in-progress / crisis recovery events).
+        reference_date: Optional explicit comparison date for independent unit testing.
+
+    Returns:
+        The validated date or None.
+
+    Raises:
+        ValueError: If event_date is prior to reference_date for an upcoming event.
+    """
+    if event_date is None:
+        return None
+
+    today = reference_date or get_current_ist_date()
+    if not allow_past and event_date < today:
+        raise ValueError(
+            f"event_date '{event_date.isoformat()}' cannot be in the past for an upcoming event. "
+            f"Current date is '{today.isoformat()}' (IST)."
+        )
+    return event_date
+
+
+def validate_strict_guest_count_value(value: Any) -> int:
+    """Reject booleans and decimals for guest count, enforce 1..2000 range."""
+    if isinstance(value, bool):
+        raise ValueError("guest_count must be an integer, not a boolean")
+    if isinstance(value, float):
+        raise ValueError("guest_count must be an integer, not a decimal")
+    try:
+        val_int = int(value)
+    except (ValueError, TypeError) as err:
+        raise ValueError("guest_count must be a valid integer") from err
+
+    if val_int < 1 or val_int > 2000:
+        raise ValueError(f"guest_count must be between 1 and 2,000, got: {val_int}")
+    return val_int
+
+
+def validate_strict_budget_inr_value(value: Any) -> int:
+    """Reject booleans and decimals for budget, enforce ₹10,000 to ₹50,000,000."""
+    if isinstance(value, bool):
+        raise ValueError("total_budget_inr must be an integer, not a boolean")
+    if isinstance(value, float):
+        raise ValueError("total_budget_inr must be an integer amount in INR, not a decimal")
+    try:
+        val_int = int(value)
+    except (ValueError, TypeError) as err:
+        raise ValueError("total_budget_inr must be a valid integer amount in INR") from err
+
+    if val_int < 10000 or val_int > 50000000:
+        raise ValueError(
+            f"total_budget_inr must be between ₹10,000 and ₹50,000,000, got: ₹{val_int:,}"
+        )
+    return val_int
 
 
 class EventPlanRequest(BaseModel):
@@ -285,44 +361,27 @@ class EventPlanRequest(BaseModel):
     language: LanguageCode = Field(
         default=LanguageCode.EN, description="Preferred language: en, hi, te"
     )
+    event_name: str | None = Field(
+        default=None, max_length=150, description="Optional user-provided event title"
+    )
+    event_date: date | None = Field(
+        default=None, description="Optional event scheduled date"
+    )
+    is_in_progress: bool = Field(
+        default=False, description="Whether event is active/in-progress for crisis mode"
+    )
 
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
 
     @field_validator("guest_count", mode="before")
     @classmethod
     def validate_strict_guest_count(cls, value: Any) -> int:
-        """Reject booleans and decimals for guest count, enforce 1..2000 range."""
-        if isinstance(value, bool):
-            raise ValueError("guest_count must be an integer, not a boolean")
-        if isinstance(value, float):
-            raise ValueError("guest_count must be an integer, not a decimal")
-        try:
-            val_int = int(value)
-        except (ValueError, TypeError) as err:
-            raise ValueError("guest_count must be a valid integer") from err
-
-        if val_int < 1 or val_int > 2000:
-            raise ValueError(f"guest_count must be between 1 and 2,000, got: {val_int}")
-        return val_int
+        return validate_strict_guest_count_value(value)
 
     @field_validator("total_budget_inr", mode="before")
     @classmethod
     def validate_strict_budget_inr(cls, value: Any) -> int:
-        """Reject booleans and decimals for budget, enforce ₹10,000 to ₹50,000,000."""
-        if isinstance(value, bool):
-            raise ValueError("total_budget_inr must be an integer, not a boolean")
-        if isinstance(value, float):
-            raise ValueError("total_budget_inr must be an integer amount in INR, not a decimal")
-        try:
-            val_int = int(value)
-        except (ValueError, TypeError) as err:
-            raise ValueError("total_budget_inr must be a valid integer amount in INR") from err
-
-        if val_int < 10000 or val_int > 50000000:
-            raise ValueError(
-                f"total_budget_inr must be between ₹10,000 and ₹50,000,000, got: ₹{val_int:,}"
-            )
-        return val_int
+        return validate_strict_budget_inr_value(value)
 
     @field_validator("city")
     @classmethod
@@ -332,6 +391,131 @@ class EventPlanRequest(BaseModel):
         if not stripped:
             raise ValueError("City name cannot be empty or whitespace")
         return stripped
+
+    @field_validator("event_name")
+    @classmethod
+    def clean_event_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        return stripped if stripped else None
+
+    @model_validator(mode="after")
+    def validate_event_date_model(self) -> "EventPlanRequest":
+        if self.event_date is not None:
+            validate_event_date(self.event_date, allow_past=self.is_in_progress)
+        return self
+
+
+class EventCreateRequest(BaseModel):
+    """Schema for creating a new event profile."""
+
+    event_type: EventType = Field(
+        ..., description="Event category: wedding, birthday, community_event"
+    )
+    guest_count: int = Field(
+        ..., description="Estimated guest count (strict integer, 1 to 2000)"
+    )
+    total_budget_inr: int = Field(
+        ..., description="Total event budget in INR (strict integer, ₹10,000 to ₹50,000,000)"
+    )
+    city_tier: CityTier = Field(
+        default=CityTier.METRO, description="Indian city tier: metro, tier2, tier3"
+    )
+    city: str | None = Field(
+        default=None, max_length=100, description="Optional city name (e.g. Hyderabad, Jaipur)"
+    )
+    event_name: str | None = Field(
+        default=None, max_length=150, description="Optional user-provided event title"
+    )
+    event_date: date | None = Field(
+        default=None, description="Optional event scheduled date"
+    )
+    language: LanguageCode = Field(
+        default=LanguageCode.EN, description="Preferred language: en, hi, te"
+    )
+    theme_notes: str = Field(
+        default="", max_length=1000, description="Optional theme, culture, or style notes"
+    )
+    is_in_progress: bool = Field(
+        default=False, description="Flag indicating event is currently active/ongoing"
+    )
+
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    @field_validator("guest_count", mode="before")
+    @classmethod
+    def validate_guest_count(cls, value: Any) -> int:
+        return validate_strict_guest_count_value(value)
+
+    @field_validator("total_budget_inr", mode="before")
+    @classmethod
+    def validate_budget(cls, value: Any) -> int:
+        return validate_strict_budget_inr_value(value)
+
+    @field_validator("city", "event_name")
+    @classmethod
+    def clean_optional_strings(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        return stripped if stripped else None
+
+    @model_validator(mode="after")
+    def validate_event_date_field(self) -> "EventCreateRequest":
+        if self.event_date is not None:
+            validate_event_date(self.event_date, allow_past=self.is_in_progress)
+        return self
+
+
+class EventUpdateRequest(BaseModel):
+    """Schema for updating an existing event profile (PATCH)."""
+
+    event_type: EventType | None = Field(default=None, description="Event category")
+    guest_count: int | None = Field(
+        default=None, description="Estimated guest count (strict integer, 1 to 2000)"
+    )
+    total_budget_inr: int | None = Field(
+        default=None, description="Total event budget in INR (strict integer, ₹10,000 to ₹50,000,000)"
+    )
+    city_tier: CityTier | None = Field(default=None, description="Indian city tier")
+    city: str | None = Field(default=None, max_length=100, description="City location")
+    event_name: str | None = Field(default=None, max_length=150, description="Event title")
+    event_date: date | None = Field(default=None, description="Event date")
+    language: LanguageCode | None = Field(default=None, description="Preferred language")
+    theme_notes: str | None = Field(default=None, max_length=1000, description="Theme notes")
+    is_in_progress: bool | None = Field(default=None, description="In-progress flag")
+
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    @field_validator("guest_count", mode="before")
+    @classmethod
+    def validate_guest_count(cls, value: Any) -> int | None:
+        if value is None:
+            return None
+        return validate_strict_guest_count_value(value)
+
+    @field_validator("total_budget_inr", mode="before")
+    @classmethod
+    def validate_budget(cls, value: Any) -> int | None:
+        if value is None:
+            return None
+        return validate_strict_budget_inr_value(value)
+
+    @field_validator("city", "event_name")
+    @classmethod
+    def clean_optional_strings(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        return stripped if stripped else None
+
+    @model_validator(mode="after")
+    def validate_event_date_field(self) -> "EventUpdateRequest":
+        if self.event_date is not None and self.is_in_progress is not None:
+            validate_event_date(self.event_date, allow_past=self.is_in_progress)
+        return self
+
 
 
 class EventValidationResponse(BaseModel):
@@ -397,6 +581,61 @@ class EventBudgetBreakdown(BaseModel):
                 f"the stated total budget of ₹{self.total_budget_inr:,}"
             )
         return self
+
+
+class EventProfile(BaseModel):
+    """Complete domain model representing an event profile."""
+
+    event_id: str = Field(..., description="Server-generated unique identifier (e.g. EV-...)")
+    event_type: EventType = Field(
+        ..., description="Event category: wedding, birthday, community_event"
+    )
+    event_name: str | None = Field(default=None, description="Optional user-provided event title")
+    city: str | None = Field(default=None, description="City location")
+    city_tier: CityTier = Field(default=CityTier.METRO, description="City logistics tier")
+    event_date: date | None = Field(default=None, description="Event scheduled date")
+    guest_count: int = Field(..., description="Guest headcount within configured limits")
+    total_budget_inr: int = Field(..., description="Total budget in INR within configured limits")
+    language: LanguageCode = Field(
+        default=LanguageCode.EN, description="Preferred communication language"
+    )
+    theme_notes: str = Field(default="", description="Optional theme or special instructions")
+    is_in_progress: bool = Field(
+        default=False, description="Whether event is active/in-progress for crisis mode"
+    )
+    budget: EventBudgetBreakdown | None = Field(
+        default=None, description="Deterministic 8-category budget allocation"
+    )
+    created_at: datetime = Field(..., description="Server creation timestamp (UTC)")
+    updated_at: datetime = Field(..., description="Server last modification timestamp (UTC)")
+
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    def to_plan_request(self) -> EventPlanRequest:
+        """Convert this profile into a validated EventPlanRequest for downstream AI orchestration."""
+        return EventPlanRequest(
+            event_type=self.event_type,
+            guest_count=self.guest_count,
+            total_budget_inr=self.total_budget_inr,
+            city_tier=self.city_tier,
+            city=self.city or "Event Location",
+            theme_notes=self.theme_notes,
+            language=self.language,
+            event_name=self.event_name,
+            event_date=self.event_date,
+            is_in_progress=self.is_in_progress,
+        )
+
+
+class EventListResponse(BaseModel):
+    """Paginated list response of event profiles."""
+
+    total: int = Field(..., ge=0, description="Total count of active event profiles")
+    skip: int = Field(default=0, ge=0, description="Pagination offset")
+    limit: int = Field(default=50, ge=1, le=100, description="Pagination batch size")
+    events: list[EventProfile] = Field(default_factory=list, description="List of event profiles")
+
+    model_config = ConfigDict(extra="forbid")
 
 
 class PlanningMilestone(BaseModel):
