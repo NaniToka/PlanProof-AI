@@ -1456,6 +1456,162 @@ class CrisisRecoveryPlan(BaseModel):
     )
 
 
+class CrisisEvaluationRequest(BaseModel):
+    """Request payload to evaluate an active or potential event crisis."""
+
+    crisis_type: str = Field(
+        ..., min_length=2, max_length=100, description="Category of the crisis encountered"
+    )
+    severity: int = Field(
+        ..., ge=1, le=3, description="Crisis severity level (1=minor, 2=moderate, 3=critical)"
+    )
+    description: str | None = Field(
+        default=None, max_length=1000, description="Optional host description of what happened"
+    )
+    affected_area: str | None = Field(
+        default=None, max_length=100, description="Affected area (e.g. catering, venue, weather, power)"
+    )
+    event_phase: EventPhase = Field(
+        default=EventPhase.EVENT_DAY, description="Phase during which the crisis emerged"
+    )
+
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+
+class MatchedCrisisScenario(BaseModel):
+    """Scenario record matched from the validated CSV dataset or generated as fallback."""
+
+    scenario_id: str = Field(..., description="Unique scenario ID from dataset or fallback identifier")
+    is_dataset_match: bool = Field(
+        ..., description="Whether this scenario was found in the validated CSV dataset"
+    )
+    crisis_type: str = Field(..., description="Standardized category of the crisis")
+    severity: int = Field(..., ge=1, le=3, description="Severity rating (1=minor, 3=critical)")
+    event_type: EventType = Field(..., description="Event type category")
+    phase: EventPhase = Field(..., description="Lifecycle phase when disruption occurred")
+    description: str = Field(..., description="Concise summary of disruption")
+    recommended_fix: str = Field(..., description="Standard immediate fix guideline")
+    cost_impact_pct_of_budget: float = Field(
+        ..., description="Calibrated cost impact percentage on total budget"
+    )
+    message_target: MessageTarget = Field(..., description="Primary audience for initial messaging")
+    synthetic: bool = Field(..., description="Whether scenario is synthetic data")
+
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+
+class CrisisActionItem(BaseModel):
+    """Specific prioritized action step in crisis recovery."""
+
+    priority: int = Field(..., ge=1, le=3, description="1=immediate/urgent, 2=operational, 3=follow-up")
+    category: str = Field(..., description="Action focus category (e.g. immediate_safety, operational_continuity)")
+    title: str = Field(..., description="Action title")
+    action: str = Field(..., description="Detailed actionable instruction")
+    responsible_party: str = Field(..., description="Designated role responsible for execution")
+    timeframe: str = Field(..., description="Estimated completion window (e.g. Immediate (0-15 mins))")
+
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+
+class CrisisBudgetImpact(BaseModel):
+    """Financial impact analysis of the crisis on event budget."""
+
+    cost_impact_pct: float = Field(..., description="Estimated cost change percentage")
+    estimated_rupee_impact: int = Field(..., description="Calculated cost impact in INR")
+    affected_categories: list[str] = Field(
+        default_factory=list, description="Primary budget categories impacted"
+    )
+    existing_buffer_inr: int = Field(..., description="Current contingency buffer in INR")
+    buffer_sufficient: bool = Field(
+        ..., description="Whether the emergency buffer can absorb the estimated impact"
+    )
+    advice: str = Field(..., description="Deterministic financial advice without fabricated quotes")
+
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+
+class CrisisCommunicationDraft(BaseModel):
+    """Ready-to-copy stakeholder communication draft with clear placeholders."""
+
+    recipient_role: str = Field(..., description="Recipient role: vendor, guests, family, organizers")
+    recipient_label: str = Field(..., description="Friendly display label for recipient")
+    subject_or_header: str = Field(..., description="Message subject line or broadcast header")
+    message_text: str = Field(..., description="Formatted message with placeholders")
+    source: str = Field(default="deterministic", description="Provenance source: deterministic, demo, or gemini")
+    placeholders: list[str] = Field(
+        default_factory=list, description="List of placeholder tokens needing user completion"
+    )
+
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+
+class EventCrisisRecoveryResponse(BaseModel):
+    """Comprehensive recovery plan for a crisis occurring on an event."""
+
+    event_id: str = Field(..., description="Target event ID")
+    event_type: EventType = Field(..., description="Event type category")
+    event_name: str | None = Field(default=None, description="Event name if set")
+    event_phase: EventPhase = Field(..., description="Event phase when crisis occurred")
+    matched_scenario: MatchedCrisisScenario = Field(
+        ..., description="Scenario matched from dataset or labeled fallback"
+    )
+    crisis_summary: str = Field(..., description="Concise assessment of the situation")
+    severity: int = Field(..., ge=1, le=3, description="Crisis severity rating")
+    affected_area: str = Field(..., description="Primary affected operational area")
+    immediate_actions: list[CrisisActionItem] = Field(
+        ..., min_length=1, description="Top-priority actions focusing on safety and triage"
+    )
+    next_step_actions: list[CrisisActionItem] = Field(
+        default_factory=list, description="Secondary operational continuity actions"
+    )
+    alternatives: list[str] = Field(
+        default_factory=list, description="Practical alternative options and contingency steps"
+    )
+    budget_impact: CrisisBudgetImpact = Field(
+        ..., description="Deterministic budget impact and buffer comparison"
+    )
+    timeline_implications: list[str] = Field(
+        default_factory=list, description="Timeline adjustments and milestone delays"
+    )
+    relevant_milestone_ids: list[str] = Field(
+        default_factory=list, description="IDs of affected timeline milestones"
+    )
+    relevant_vendor_checklist_ids: list[str] = Field(
+        default_factory=list, description="IDs of affected vendor checklist tasks"
+    )
+    escalation_guidance: str = Field(
+        ..., description="Clear escalation guidance and emergency service contact recommendations"
+    )
+    warnings: list[str] = Field(
+        default_factory=list, description="Operational warnings and assumptions"
+    )
+    communication_drafts: list[CrisisCommunicationDraft] = Field(
+        default_factory=list, description="Copyable communication drafts for stakeholders"
+    )
+    disclaimer: str = Field(
+        default=(
+            "PlanProof AI crisis recovery plans provide deterministic advisory coordination steps. "
+            "The system does not automatically execute bookings, alter budgets, cancel contracts, "
+            "or contact external vendors. For life safety emergencies, contact local emergency services immediately (112 / 108 / 101)."
+        ),
+        description="Operational safety disclaimer",
+    )
+
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+
+class CrisisTypeMetadata(BaseModel):
+    """Metadata descriptor for supported crisis categories."""
+
+    crisis_type: str = Field(..., description="Identifier matching CSV crisis_type")
+    title: str = Field(..., description="Human-readable title")
+    affected_area: str = Field(..., description="Default affected operational area")
+    typical_severity: int = Field(..., description="Typical severity level")
+    description: str = Field(..., description="Short explanation of crisis type")
+
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+
 class EventPlanResponse(BaseModel):
     """Full composite event plan data contract for future AI generation."""
 

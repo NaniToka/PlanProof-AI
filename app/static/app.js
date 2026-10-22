@@ -25,6 +25,9 @@ const state = {
     riskSeverity: 'all',
     milestoneStatus: 'all',
   },
+  crisisTypes: [],
+  crisisResult: null,
+  crisisSeverity: 2,
 };
 
 // ==============================================================================
@@ -145,6 +148,17 @@ const API = {
 
   getFamilyCouncil(eventId) {
     return this.request(`/api/v1/events/${encodeURIComponent(eventId)}/family-council`);
+  },
+
+  getCrisisTypes() {
+    return this.request('/api/v1/crisis/types');
+  },
+
+  evaluateCrisis(eventId, payload) {
+    return this.request(`/api/v1/events/${encodeURIComponent(eventId)}/crisis/evaluate`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
   },
 };
 
@@ -1318,6 +1332,493 @@ function closeEditVendorModal() {
 }
 
 // ==============================================================================
+// 5.9 Crisis Recovery Center View & Handlers
+// ==============================================================================
+
+function highlightPlaceholders(text) {
+  if (!text) return '';
+  const escaped = escapeHTML(text);
+  return escaped.replace(/\[([^\]]+)\]/g, '<mark>[$1]</mark>');
+}
+
+function selectCrisisSeverity(sev) {
+  state.crisisSeverity = Number(sev);
+  document.querySelectorAll('.crisis-severity-btn').forEach((btn, idx) => {
+    const s = idx + 1;
+    btn.className = `crisis-severity-btn ${s === state.crisisSeverity ? `active sev-${s}` : ''}`;
+  });
+}
+
+function onCrisisTypeChange(val) {
+  const typeObj = (state.crisisTypes || []).find(t => t.crisis_type === val);
+  if (typeObj) {
+    const areaSelect = document.getElementById('crisis-affected-area');
+    if (areaSelect && typeObj.affected_area) {
+      areaSelect.value = typeObj.affected_area;
+    }
+    if (typeObj.typical_severity) {
+      selectCrisisSeverity(typeObj.typical_severity);
+    }
+  }
+}
+
+async function handleCrisisFormSubmit(evt) {
+  if (evt) evt.preventDefault();
+  if (!state.currentEventId) {
+    showToast('Please select or create an event first', 'error');
+    return;
+  }
+
+  const type = document.getElementById('crisis-select-type')?.value || 'rain';
+  const area = document.getElementById('crisis-affected-area')?.value || 'weather';
+  const phase = document.getElementById('crisis-event-phase')?.value || 'event_day';
+  const desc = document.getElementById('crisis-user-desc')?.value?.trim() || null;
+  const severity = state.crisisSeverity || 2;
+
+  const btn = document.getElementById('btn-submit-crisis-eval');
+  const originalText = btn ? btn.innerHTML : '';
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<span>⏳</span><span>Evaluating Scenario & Playbook...</span>';
+  }
+
+  try {
+    const payload = {
+      crisis_type: type,
+      severity: severity,
+      affected_area: area,
+      event_phase: phase,
+      description: desc,
+    };
+    const response = await API.evaluateCrisis(state.currentEventId, payload);
+    state.crisisResult = response;
+    renderCrisis();
+    showToast('Crisis recovery playbook generated successfully!', 'success');
+  } catch (err) {
+    console.error('Crisis evaluation failed:', err);
+    showToast(err.message || 'Failed to evaluate crisis scenario', 'error');
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = originalText;
+    }
+  }
+}
+
+function resetCrisisEvaluation() {
+  state.crisisResult = null;
+  renderCrisis();
+}
+
+function copyDraftById(elementId, btn) {
+  const el = document.getElementById(elementId);
+  if (!el) return;
+  const text = el.innerText || el.textContent;
+  copyDraftToClipboard(text, btn);
+}
+
+function copyDraftToClipboard(text, btn) {
+  if (!text) return;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(() => {
+      onCopySuccess(btn);
+    }).catch(() => {
+      fallbackCopy(text, btn);
+    });
+  } else {
+    fallbackCopy(text, btn);
+  }
+}
+
+function fallbackCopy(text, btn) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  try {
+    document.execCommand('copy');
+    onCopySuccess(btn);
+  } catch (e) {
+    showToast('Failed to copy text to clipboard', 'error');
+  }
+  document.body.removeChild(ta);
+}
+
+function onCopySuccess(btn) {
+  if (btn) {
+    const originalText = btn.innerHTML;
+    btn.classList.add('copied');
+    btn.innerHTML = '<span>✓</span><span>Copied to Clipboard</span>';
+    setTimeout(() => {
+      btn.classList.remove('copied');
+      btn.innerHTML = originalText;
+    }, 2500);
+  }
+  showToast('Draft copied to clipboard!', 'success');
+}
+
+async function renderCrisis() {
+  const container = document.getElementById('crisis-content');
+  if (!container) return;
+
+  if (!state.currentEvent) {
+    container.innerHTML = `
+      <div class="empty-state">
+        <div class="empty-icon">🚨</div>
+        <h3 class="empty-title">No Active Event Selected</h3>
+        <p class="empty-desc">Select an event from the top dropdown or create a new event to activate the Crisis Recovery Center.</p>
+        <button class="btn btn-cyan" onclick="openCreateEventModal()">+ Create Event</button>
+      </div>
+    `;
+    return;
+  }
+
+  // Load crisis types if not already fetched
+  if (!state.crisisTypes || state.crisisTypes.length === 0) {
+    try {
+      state.crisisTypes = await API.getCrisisTypes();
+    } catch (err) {
+      console.error('Failed to load crisis types:', err);
+    }
+  }
+
+  const ev = state.currentEvent;
+  const types = state.crisisTypes || [];
+  const result = state.crisisResult;
+
+  let resultHtml = '';
+  if (result && result.data) {
+    const d = result.data;
+    const isP1Safety = d.immediate_actions && d.immediate_actions.some(a => a.category === 'immediate_safety');
+
+    resultHtml = `
+      <div class="crisis-hero-banner">
+        <div style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 1rem; margin-bottom: 1rem;">
+          <div>
+            <div style="display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.5rem; flex-wrap: wrap;">
+              <span class="badge ${d.severity === 3 ? 'badge-danger' : d.severity === 2 ? 'badge-warning' : 'badge-cyan'}">
+                SEVERITY ${d.severity}: ${d.severity === 3 ? 'CRITICAL DISRUPTION' : d.severity === 2 ? 'MODERATE IMPACT' : 'MINOR ADJUSTMENT'}
+              </span>
+              <span class="dataset-provenance-pill ${d.matched_scenario.is_dataset_match ? '' : 'fallback'}">
+                ${d.matched_scenario.is_dataset_match ? `✓ Matched Dataset Scenario: ${escapeHTML(d.matched_scenario.scenario_id)}` : '⚡ Calibrated Operational Fallback'}
+              </span>
+            </div>
+            <h2 style="font-size: 1.4rem; font-weight: 800; color: var(--text-primary); margin-bottom: 0.35rem;">
+              ${escapeHTML(d.crisis_summary)}
+            </h2>
+            <div style="font-size: 0.85rem; color: var(--text-secondary);">
+              Affected Operational Sector: <strong style="color: var(--electric-cyan);">${escapeHTML(d.affected_area.replace('_', ' ').toUpperCase())}</strong>
+              · Event Phase: <strong>${escapeHTML(d.event_phase.replace('_', ' ').toUpperCase())}</strong>
+            </div>
+          </div>
+          <button class="btn btn-secondary btn-sm" onclick="resetCrisisEvaluation()">
+            🔄 Evaluate New Scenario
+          </button>
+        </div>
+
+        ${isP1Safety ? `
+          <div class="safety-triage-box">
+            <div class="safety-triage-icon">⚠️</div>
+            <div>
+              <div class="safety-triage-title">Priority 1 Immediate Life Safety & Emergency Protocol</div>
+              <div class="safety-triage-desc">
+                ${escapeHTML(d.immediate_actions.find(a => a.category === 'immediate_safety')?.action || 'Ensure immediate physical safety of all guests.')}
+              </div>
+            </div>
+          </div>
+        ` : ''}
+      </div>
+
+      <!-- Grid: Immediate Actions & Budget Impact -->
+      <div class="grid-2" style="margin-bottom: 2rem;">
+        <!-- Column 1: Immediate & Next Actions -->
+        <div>
+          <h3 style="font-size: 1.15rem; font-weight: 800; color: var(--text-primary); margin-bottom: 1rem; display: flex; align-items: center; gap: 0.5rem;">
+            <span>⚡</span><span>Prioritized Operational Actions</span>
+          </h3>
+
+          <div style="margin-bottom: 1rem;">
+            ${(d.immediate_actions || []).map(a => `
+              <div class="action-item-card p${a.priority}">
+                <div class="action-meta-row">
+                  <span class="badge-priority p${a.priority}">Priority ${a.priority} · Immediate</span>
+                  <span class="badge-responsible">👤 ${escapeHTML(a.responsible_party)}</span>
+                  <span class="badge-timeframe">⏱️ ${escapeHTML(a.timeframe)}</span>
+                </div>
+                <div class="action-title">${escapeHTML(a.title)}</div>
+                <div class="action-instruction">${escapeHTML(a.action)}</div>
+              </div>
+            `).join('')}
+          </div>
+
+          ${(d.next_step_actions && d.next_step_actions.length > 0) ? `
+            <div style="margin-top: 1.5rem;">
+              <h4 style="font-size: 0.95rem; font-weight: 700; color: var(--text-secondary); margin-bottom: 0.75rem;">
+                Secondary Continuity Steps
+              </h4>
+              ${d.next_step_actions.map(a => `
+                <div class="action-item-card p${a.priority}">
+                  <div class="action-meta-row">
+                    <span class="badge-priority p${a.priority}">Priority ${a.priority} · Secondary</span>
+                    <span class="badge-responsible">👤 ${escapeHTML(a.responsible_party)}</span>
+                    <span class="badge-timeframe">⏱️ ${escapeHTML(a.timeframe)}</span>
+                  </div>
+                  <div class="action-title">${escapeHTML(a.title)}</div>
+                  <div class="action-instruction">${escapeHTML(a.action)}</div>
+                </div>
+              `).join('')}
+            </div>
+          ` : ''}
+        </div>
+
+        <!-- Column 2: Budget Impact & Timeline Linkages -->
+        <div>
+          <!-- Budget Impact Box -->
+          <div class="card" style="margin-bottom: 1.5rem;">
+            <div class="card-header">
+              <h3 class="card-title">💰 Budget Impact & Contingency Analysis</h3>
+              <span class="badge ${d.budget_impact.buffer_sufficient ? 'badge-success' : 'badge-danger'}">
+                ${d.budget_impact.buffer_sufficient ? 'Buffer Absorbs Impact' : 'Deficit / Rebalance Required'}
+              </span>
+            </div>
+            
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
+              <div style="background: var(--bg-surface-2); padding: 0.85rem; border-radius: var(--radius-md); border: 1px solid var(--amethyst-border);">
+                <div style="font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase;">Estimated Rupee Impact</div>
+                <div style="font-size: 1.25rem; font-weight: 800; color: ${d.budget_impact.estimated_rupee_impact > 0 ? '#ff6b6b' : 'var(--success)'}; font-family: var(--font-mono);">
+                  ${d.budget_impact.estimated_rupee_impact > 0 ? '+' : ''}${formatINR(d.budget_impact.estimated_rupee_impact)}
+                </div>
+                <div style="font-size: 0.75rem; color: var(--text-secondary); margin-top: 0.2rem;">
+                  ${d.budget_impact.cost_impact_pct > 0 ? '+' : ''}${d.budget_impact.cost_impact_pct.toFixed(1)}% of total budget
+                </div>
+              </div>
+
+              <div style="background: var(--bg-surface-2); padding: 0.85rem; border-radius: var(--radius-md); border: 1px solid var(--amethyst-border);">
+                <div style="font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase;">Available Contingency Buffer</div>
+                <div style="font-size: 1.25rem; font-weight: 800; color: var(--electric-cyan); font-family: var(--font-mono);">
+                  ${formatINR(d.budget_impact.existing_buffer_inr)}
+                </div>
+                <div style="font-size: 0.75rem; color: var(--text-secondary); margin-top: 0.2rem;">
+                  Emergency reserve cushion
+                </div>
+              </div>
+            </div>
+
+            <div style="font-size: 0.875rem; color: var(--text-primary); line-height: 1.5; background: var(--bg-surface-2); padding: 0.85rem; border-radius: var(--radius-md); margin-bottom: 0.75rem;">
+              ${escapeHTML(d.budget_impact.advice)}
+            </div>
+
+            <div style="font-size: 0.8rem; color: var(--text-muted);">
+              Impacted Budget Lines: ${(d.budget_impact.affected_categories || []).map(c => `<strong style="color: var(--text-secondary);">${escapeHTML(c)}</strong>`).join(', ')}
+            </div>
+          </div>
+
+          <!-- Timeline & Vendor Links -->
+          <div class="card" style="margin-bottom: 1.5rem;">
+            <div class="card-header">
+              <h3 class="card-title">🔗 Event Linkages & Checklists</h3>
+            </div>
+
+            <div style="margin-bottom: 1rem;">
+              <div style="font-size: 0.8rem; font-weight: 700; color: var(--text-secondary); text-transform: uppercase; margin-bottom: 0.5rem;">
+                Affected Vendor Checklist Tasks (${d.relevant_vendor_checklist_ids.length})
+              </div>
+              ${d.relevant_vendor_checklist_ids.length > 0 ? `
+                <div style="display: flex; flex-wrap: wrap; gap: 0.5rem;">
+                  ${d.relevant_vendor_checklist_ids.map(id => `
+                    <span style="font-family: var(--font-mono); font-size: 0.75rem; padding: 0.3rem 0.6rem; border-radius: var(--radius-sm); background: rgba(59, 10, 107, 0.4); border: 1px solid var(--amethyst-border); color: var(--text-primary);">
+                      📋 ${escapeHTML(id)}
+                    </span>
+                  `).join('')}
+                </div>
+              ` : `
+                <div style="font-size: 0.85rem; color: var(--text-muted); font-style: italic;">No direct vendor checklist tasks flagged.</div>
+              `}
+            </div>
+
+            <div>
+              <div style="font-size: 0.8rem; font-weight: 700; color: var(--text-secondary); text-transform: uppercase; margin-bottom: 0.5rem;">
+                Timeline Milestone Advisory
+              </div>
+              <ul style="padding-left: 1.25rem; font-size: 0.85rem; color: var(--text-secondary); line-height: 1.5;">
+                ${(d.timeline_implications || []).map(t => `<li>${escapeHTML(t)}</li>`).join('')}
+              </ul>
+            </div>
+          </div>
+
+          <!-- Practical Alternatives -->
+          <div class="card">
+            <div class="card-header">
+              <h3 class="card-title">💡 Practical Alternatives & Contingencies</h3>
+            </div>
+            <ul style="padding-left: 1.25rem; font-size: 0.875rem; color: var(--text-primary); line-height: 1.6;">
+              ${(d.alternatives || []).map(alt => `<li>${escapeHTML(alt)}</li>`).join('')}
+            </ul>
+          </div>
+        </div>
+      </div>
+
+      <!-- Communication Drafts -->
+      <div style="margin-bottom: 2rem;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; flex-wrap: wrap; gap: 0.5rem;">
+          <div>
+            <h3 style="font-size: 1.25rem; font-weight: 800; color: var(--text-primary);">
+              📢 Stakeholder Communication Drafts
+            </h3>
+            <div style="font-size: 0.85rem; color: var(--text-muted);">
+              Concise, respectful messaging with bracketed placeholders. Ready to copy for WhatsApp or SMS.
+            </div>
+          </div>
+          <span class="badge badge-cyan">
+            Source: ${escapeHTML(d.communication_drafts[0]?.source || 'deterministic').toUpperCase()}
+          </span>
+        </div>
+
+        <div class="grid-2">
+          ${(d.communication_drafts || []).map((draft, idx) => `
+            <div class="crisis-draft-card">
+              <div class="crisis-draft-header">
+                <div>
+                  <span class="crisis-draft-role">${escapeHTML(draft.recipient_role)}</span>
+                  <div style="font-weight: 700; font-size: 0.95rem; color: var(--text-primary);">
+                    ${escapeHTML(draft.recipient_label)}
+                  </div>
+                </div>
+                <span class="badge ${draft.recipient_role === 'vendor' ? 'badge-danger' : draft.recipient_role === 'guests' ? 'badge-cyan' : 'badge-warning'}">
+                  ${escapeHTML(draft.recipient_role.toUpperCase())}
+                </span>
+              </div>
+
+              <div class="crisis-draft-text-box" id="draft-text-${idx}">${highlightPlaceholders(draft.message_text)}</div>
+
+              <button class="btn-copy-draft" type="button" onclick="copyDraftById('draft-text-${idx}', this)">
+                <span>📋</span>
+                <span>Copy Message Draft</span>
+              </button>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+
+      <!-- Escalation & Safety Guidance -->
+      <div class="card" style="border-color: rgba(239, 68, 68, 0.4); margin-bottom: 1.5rem;">
+        <div class="card-header">
+          <h3 class="card-title" style="color: #ff6b6b;">🚨 Emergency Escalation Guidance</h3>
+        </div>
+        <div style="font-size: 0.875rem; color: var(--text-primary); line-height: 1.6; white-space: pre-wrap;">
+          ${escapeHTML(d.escalation_guidance)}
+        </div>
+      </div>
+
+      <!-- Disclaimer -->
+      <div style="font-size: 0.8rem; color: var(--text-dim); text-align: center; margin-top: 1rem; line-height: 1.5;">
+        ${escapeHTML(d.disclaimer)}
+      </div>
+    `;
+  }
+
+  // Render reporting intake form + results
+  container.innerHTML = `
+    <div class="view-header">
+      <div>
+        <h1 class="view-title">🚨 Interactive Crisis Recovery Center</h1>
+        <p class="view-subtitle">
+          Rapid emergency response grounded in 5,000 validated crisis scenarios, deterministic budget protection, and stakeholder communication playbooks.
+        </p>
+      </div>
+    </div>
+
+    <!-- Crisis Intake Reporting Form -->
+    <div class="crisis-form-card">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.25rem; flex-wrap: wrap; gap: 0.5rem;">
+        <h2 style="font-size: 1.15rem; font-weight: 800; color: var(--text-primary); display: flex; align-items: center; gap: 0.5rem;">
+          <span>⚡</span><span>Report or Simulate an Event Crisis</span>
+        </h2>
+        <div style="font-size: 0.85rem; color: var(--text-muted);">
+          Active: <strong style="color: var(--electric-cyan);">${escapeHTML(ev.event_name || ev.event_type)}</strong> (₹${(ev.total_budget_inr || 0).toLocaleString('en-IN')})
+        </div>
+      </div>
+
+      <form id="form-crisis-eval" onsubmit="handleCrisisFormSubmit(event)">
+        <div class="form-grid-3">
+          <div class="form-group">
+            <label for="crisis-select-type" class="form-label">Crisis Category</label>
+            <select id="crisis-select-type" class="form-select" onchange="onCrisisTypeChange(this.value)">
+              ${types.map(t => `
+                <option value="${escapeHTML(t.crisis_type)}">
+                  ${escapeHTML(t.title)} (${escapeHTML(t.affected_area)})
+                </option>
+              `).join('')}
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">Disruption Severity</label>
+            <div class="crisis-severity-picker">
+              <button type="button" class="crisis-severity-btn ${state.crisisSeverity === 1 ? 'active sev-1' : ''}" onclick="selectCrisisSeverity(1)">
+                <span>🟢</span><span>Minor (1)</span>
+              </button>
+              <button type="button" class="crisis-severity-btn ${state.crisisSeverity === 2 ? 'active sev-2' : ''}" onclick="selectCrisisSeverity(2)">
+                <span>🟡</span><span>Moderate (2)</span>
+              </button>
+              <button type="button" class="crisis-severity-btn ${state.crisisSeverity === 3 ? 'active sev-3' : ''}" onclick="selectCrisisSeverity(3)">
+                <span>🔴</span><span>Critical (3)</span>
+              </button>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label for="crisis-affected-area" class="form-label">Affected Area</label>
+            <select id="crisis-affected-area" class="form-select">
+              <option value="catering">Catering & Food Service</option>
+              <option value="venue">Venue & Facilities</option>
+              <option value="weather">Weather & Lawn Outdoors</option>
+              <option value="power">Power & Grid Infrastructure</option>
+              <option value="sound">Sound & AV Systems</option>
+              <option value="photography">Photography & Media</option>
+              <option value="decor">Decor & Mandap Rigging</option>
+              <option value="guest_attendance">Guest Turnout & Seating</option>
+              <option value="budget">Budget & Financial Contingency</option>
+              <option value="hospitality">Hospitality & VIP Protocols</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="form-grid-2">
+          <div class="form-group">
+            <label for="crisis-event-phase" class="form-label">Event Lifecycle Phase</label>
+            <select id="crisis-event-phase" class="form-select">
+              <option value="event_day">Event Day (Active Execution)</option>
+              <option value="day_before">Day Before (T-24h Final Prep)</option>
+              <option value="planning">Planning Phase (Advance Weeks)</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label for="crisis-user-desc" class="form-label">Incident Details / Host Notes (Optional)</label>
+            <input type="text" id="crisis-user-desc" class="form-input" placeholder="e.g. Sudden thunderstorm hitting open lawn buffet at 19:30" maxlength="300">
+          </div>
+        </div>
+
+        <div style="display: flex; justify-content: flex-end; margin-top: 0.5rem;">
+          <button type="submit" class="btn btn-cyan" id="btn-submit-crisis-eval">
+            <span>🚨</span>
+            <span>Evaluate Crisis & Generate Playbook</span>
+          </button>
+        </div>
+      </form>
+    </div>
+
+    <!-- Crisis Results Section -->
+    <div id="crisis-results-viewport">
+      ${resultHtml}
+    </div>
+  `;
+}
+
+// ==============================================================================
 // 6. Navigation & Routing
 // ==============================================================================
 
@@ -1362,6 +1863,9 @@ function switchView(viewName) {
       break;
     case 'council':
       renderCouncil();
+      break;
+    case 'crisis':
+      renderCrisis();
       break;
     default:
       renderOverview();

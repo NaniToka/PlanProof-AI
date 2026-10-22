@@ -29,8 +29,9 @@ def test_root_serves_new_dashboard() -> None:
         assert 'data-view="ideas"' in html
         assert 'data-view="risks"' in html
         assert 'data-view="council"' in html
+        assert 'data-view="crisis"' in html
 
-        # Verify all 8 view containers are present
+        # Verify view containers are present
         assert 'id="view-overview"' in html
         assert 'id="view-event-details"' in html
         assert 'id="view-budget"' in html
@@ -39,6 +40,7 @@ def test_root_serves_new_dashboard() -> None:
         assert 'id="view-ideas"' in html
         assert 'id="view-risks"' in html
         assert 'id="view-council"' in html
+        assert 'id="view-crisis"' in html
 
         # Verify modals
         assert 'id="modal-create-event"' in html
@@ -88,6 +90,8 @@ def test_app_js_connects_all_backend_endpoints() -> None:
         assert "/ideas" in js
         assert "/risks" in js
         assert "/family-council" in js
+        assert "/api/v1/crisis/types" in js
+        assert "/crisis/evaluate" in js
         assert "/api/v1/ai/status" in js
 
         # Verify all 8 budget categories

@@ -79,8 +79,26 @@ from app.services.council_service import (
     build_family_council_prompt,
     generate_event_family_council,
 )
+from app.services.crisis_service import (
+    SUPPORTED_CRISIS_TYPES,
+    calculate_crisis_budget_impact,
+    evaluate_event_crisis,
+    find_relevant_milestone_and_vendor_ids,
+    generate_crisis_action_items,
+    generate_crisis_communication_drafts,
+    match_crisis_scenario,
+    normalize_crisis_type,
+)
 
 __all__ = [
+    "SUPPORTED_CRISIS_TYPES",
+    "calculate_crisis_budget_impact",
+    "evaluate_event_crisis",
+    "find_relevant_milestone_and_vendor_ids",
+    "generate_crisis_action_items",
+    "generate_crisis_communication_drafts",
+    "match_crisis_scenario",
+    "normalize_crisis_type",
     "AIOrchestrator",
     "EventService",
     "EventStore",

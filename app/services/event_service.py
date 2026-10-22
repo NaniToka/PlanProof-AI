@@ -49,6 +49,8 @@ from app.schemas import (
     VendorChecklistItemUpdateRequest,
     get_current_ist_date,
     validate_event_date,
+    CrisisEvaluationRequest,
+    EventCrisisRecoveryResponse,
 )
 from app.services.budget import (
     calculate_initial_budget,
@@ -75,6 +77,9 @@ from app.services.vendor_service import (
     calculate_vendor_checklist_summary,
     generate_event_vendor_checklist,
     recalculate_checklist_due_dates,
+)
+from app.services.crisis_service import (
+    evaluate_event_crisis,
 )
 
 logger = logging.getLogger(__name__)
@@ -979,6 +984,36 @@ class EventService:
             message="Deterministic family council deliberation completed.",
             warnings=council_res.missing_data_warnings,
         )
+
+    async def evaluate_crisis(
+        self,
+        event_id: str,
+        request: CrisisEvaluationRequest,
+        dataset_repo: DatasetRepository,
+        orchestrator: AIOrchestrator | None = None,
+    ) -> AIResultEnvelope[EventCrisisRecoveryResponse] | None:
+        """Evaluate an event crisis and produce a recovery plan without mutating event resources.
+
+        Args:
+            event_id: Target event profile identifier.
+            request: Crisis evaluation parameters (type, severity, description, area, phase).
+            dataset_repo: In-memory dataset repository for scenario matching.
+            orchestrator: Optional AI orchestrator for demo fixtures or Gemini enrichment.
+
+        Returns:
+            AIResultEnvelope containing EventCrisisRecoveryResponse, or None if event not found.
+        """
+        profile = await self.get_event(event_id)
+        if profile is None:
+            return None
+
+        return await evaluate_event_crisis(
+            profile=profile,
+            dataset_repo=dataset_repo,
+            request=request,
+            orchestrator=orchestrator,
+        )
+
 
 
 

@@ -1169,6 +1169,307 @@ body {
   to { transform: translateX(0); opacity: 1; }
 }
 
+/* ==============================================================================
+ * Crisis Recovery Center Styles
+ * ============================================================================== */
+
+.crisis-hero-banner {
+  background: linear-gradient(135deg, rgba(59, 10, 107, 0.4) 0%, rgba(5, 5, 5, 0.95) 100%);
+  border: 1px solid var(--amethyst-border);
+  border-radius: var(--radius-xl);
+  padding: 1.75rem;
+  margin-bottom: 2rem;
+  position: relative;
+  overflow: hidden;
+}
+
+.crisis-hero-banner::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 4px;
+  height: 100%;
+  background: var(--electric-cyan);
+  box-shadow: 0 0 12px var(--electric-cyan);
+}
+
+.crisis-form-card {
+  background: var(--bg-surface-1);
+  border: 1px solid var(--amethyst-border);
+  border-radius: var(--radius-lg);
+  padding: 1.5rem;
+  margin-bottom: 2rem;
+}
+
+.crisis-severity-picker {
+  display: flex;
+  gap: 0.75rem;
+  margin-top: 0.35rem;
+}
+
+.crisis-severity-btn {
+  flex: 1;
+  padding: 0.6rem 0.75rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--amethyst-border);
+  background: var(--bg-surface-2);
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  transition: all 0.2s ease;
+}
+
+.crisis-severity-btn:hover {
+  border-color: var(--cyan-border);
+  color: var(--text-primary);
+}
+
+.crisis-severity-btn.active.sev-1 {
+  background: rgba(16, 185, 129, 0.15);
+  border-color: var(--success);
+  color: var(--success);
+}
+
+.crisis-severity-btn.active.sev-2 {
+  background: rgba(245, 158, 11, 0.15);
+  border-color: var(--warning);
+  color: var(--warning);
+}
+
+.crisis-severity-btn.active.sev-3 {
+  background: rgba(239, 68, 68, 0.2);
+  border-color: var(--danger);
+  color: var(--danger);
+  box-shadow: 0 0 10px rgba(239, 68, 68, 0.3);
+}
+
+.safety-triage-box {
+  background: linear-gradient(135deg, rgba(239, 68, 68, 0.15) 0%, rgba(59, 10, 107, 0.2) 100%);
+  border: 1px solid rgba(239, 68, 68, 0.5);
+  border-radius: var(--radius-lg);
+  padding: 1.25rem 1.5rem;
+  margin-bottom: 1.75rem;
+  display: flex;
+  gap: 1rem;
+  align-items: flex-start;
+}
+
+.safety-triage-icon {
+  font-size: 1.75rem;
+  flex-shrink: 0;
+  line-height: 1;
+}
+
+.safety-triage-title {
+  font-size: 1.05rem;
+  font-weight: 800;
+  color: #ff6b6b;
+  margin-bottom: 0.35rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.safety-triage-desc {
+  font-size: 0.9rem;
+  color: var(--text-primary);
+  line-height: 1.5;
+}
+
+.action-item-card {
+  background: var(--bg-surface-2);
+  border: 1px solid var(--amethyst-border);
+  border-radius: var(--radius-lg);
+  padding: 1.25rem;
+  margin-bottom: 1rem;
+  transition: all 0.2s ease;
+  position: relative;
+}
+
+.action-item-card:hover {
+  border-color: var(--cyan-border);
+  transform: translateY(-2px);
+}
+
+.action-item-card.p1 {
+  border-left: 4px solid var(--danger);
+}
+
+.action-item-card.p2 {
+  border-left: 4px solid var(--warning);
+}
+
+.action-item-card.p3 {
+  border-left: 4px solid var(--electric-cyan);
+}
+
+.action-meta-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.6rem;
+}
+
+.badge-priority {
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 0.2rem 0.5rem;
+  border-radius: var(--radius-sm);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.badge-priority.p1 {
+  background: rgba(239, 68, 68, 0.2);
+  color: #ff6b6b;
+  border: 1px solid rgba(239, 68, 68, 0.4);
+}
+
+.badge-priority.p2 {
+  background: rgba(245, 158, 11, 0.2);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.4);
+}
+
+.badge-priority.p3 {
+  background: rgba(0, 229, 255, 0.15);
+  color: var(--electric-cyan);
+  border: 1px solid var(--cyan-border);
+}
+
+.badge-responsible {
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 0.2rem 0.5rem;
+  border-radius: var(--radius-sm);
+  background: rgba(59, 10, 107, 0.5);
+  color: var(--text-secondary);
+  border: 1px solid var(--amethyst-border);
+}
+
+.badge-timeframe {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+
+.action-title {
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: 0.4rem;
+}
+
+.action-instruction {
+  font-size: 0.88rem;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.crisis-draft-card {
+  background: var(--bg-surface-2);
+  border: 1px solid var(--amethyst-border);
+  border-radius: var(--radius-lg);
+  padding: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.crisis-draft-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.75rem;
+  gap: 0.5rem;
+}
+
+.crisis-draft-role {
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--electric-cyan);
+  letter-spacing: 0.05em;
+}
+
+.crisis-draft-text-box {
+  background: #050505;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius-md);
+  padding: 1rem;
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  color: #e2e8f0;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  flex-grow: 1;
+  margin-bottom: 1rem;
+  user-select: text;
+}
+
+.crisis-draft-text-box mark {
+  background: rgba(0, 229, 255, 0.2);
+  color: var(--electric-cyan);
+  padding: 0 0.2rem;
+  border-radius: 2px;
+}
+
+.btn-copy-draft {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.6rem;
+  border-radius: var(--radius-md);
+  background: rgba(59, 10, 107, 0.6);
+  border: 1px solid var(--amethyst-border);
+  color: var(--text-primary);
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.btn-copy-draft:hover {
+  background: var(--royal-amethyst);
+  border-color: var(--electric-cyan);
+  color: var(--electric-cyan);
+}
+
+.btn-copy-draft.copied {
+  background: rgba(16, 185, 129, 0.2);
+  border-color: var(--success);
+  color: var(--success);
+}
+
+.dataset-provenance-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 0.25rem 0.6rem;
+  border-radius: var(--radius-sm);
+  background: rgba(0, 229, 255, 0.1);
+  color: var(--electric-cyan);
+  border: 1px solid var(--cyan-border);
+  font-family: var(--font-mono);
+}
+
+.dataset-provenance-pill.fallback {
+  background: rgba(245, 158, 11, 0.1);
+  color: var(--warning);
+  border-color: rgba(245, 158, 11, 0.4);
+}
+
 /* Reduced Motion Support */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {

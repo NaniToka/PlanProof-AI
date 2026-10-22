@@ -24,10 +24,13 @@ from app.schemas import (
     BudgetCalculationResponse,
     BudgetRebalanceRequest,
     BudgetRebalanceResponse,
+    CrisisEvaluationRequest,
+    CrisisTypeMetadata,
     DataStatusResponse,
     EventBudgetPlanResponse,
     EventBudgetRebalanceRequest,
     EventCreateRequest,
+    EventCrisisRecoveryResponse,
     EventFamilyCouncilResponse,
     EventIdeasResponse,
     EventListResponse,
@@ -49,6 +52,7 @@ from app.schemas import (
     VendorChecklistItemUpdateRequest,
 )
 from app.services.ai_orchestrator import AIOrchestrator
+from app.services.crisis_service import SUPPORTED_CRISIS_TYPES
 from app.services.event_service import EventService, EventStore
 from app.services.budget import (
     BudgetEngineError,
@@ -435,6 +439,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             request.app.state.event_service = service
         return service
 
+    def get_dataset_repository(request: Request) -> DatasetRepository:
+        """Dependency resolving application-level dataset repository."""
+        repo: DatasetRepository | None = getattr(request.app.state, "dataset_repo", None)
+        if repo is None:
+            repo = DatasetRepository()
+            request.app.state.dataset_repo = repo
+        return repo
+
     @app.post(
         "/api/v1/events",
         response_model=EventProfile,
@@ -809,6 +821,47 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             event_id=event_id,
             orchestrator=orchestrator,
             reference_date=reference_date,
+        )
+        if result is None:
+            raise StarletteHTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Event profile '{event_id}' not found.",
+            )
+        return result
+
+    @app.get(
+        "/api/v1/crisis/types",
+        response_model=list[CrisisTypeMetadata],
+        tags=["Crisis Recovery"],
+        summary="List all supported crisis categories with operational metadata",
+    )
+    async def get_crisis_types() -> list[CrisisTypeMetadata]:
+        """Return canonical list of supported crisis categories with affected area and typical severity."""
+        return SUPPORTED_CRISIS_TYPES
+
+    @app.post(
+        "/api/v1/events/{event_id}/crisis/evaluate",
+        response_model=AIResultEnvelope[EventCrisisRecoveryResponse],
+        responses={
+            404: {"model": StandardErrorResponse, "description": "Event profile not found"},
+            422: {"model": StandardErrorResponse, "description": "Validation error"},
+        },
+        tags=["Crisis Recovery", "Events"],
+        summary="Evaluate an active or potential event crisis and generate a prioritized recovery plan",
+    )
+    async def evaluate_crisis_for_event(
+        event_id: str,
+        request_body: CrisisEvaluationRequest,
+        service: EventService = Depends(get_event_service),
+        dataset_repo: DatasetRepository = Depends(get_dataset_repository),
+        orchestrator: AIOrchestrator = Depends(get_ai_orchestrator),
+    ) -> AIResultEnvelope[EventCrisisRecoveryResponse]:
+        """Generate a deterministic, structured recovery plan grounded in validated crisis scenarios."""
+        result = await service.evaluate_crisis(
+            event_id=event_id,
+            request=request_body,
+            dataset_repo=dataset_repo,
+            orchestrator=orchestrator,
         )
         if result is None:
             raise StarletteHTTPException(
