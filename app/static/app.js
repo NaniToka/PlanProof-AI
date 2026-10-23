@@ -351,7 +351,7 @@ async function renderOverview() {
 
     container.innerHTML = `
       <!-- Hero Event Banner -->
-      <div class="card" style="margin-bottom: 1.5rem; background: linear-gradient(135deg, rgba(59, 10, 107, 0.4) 0%, rgba(18, 7, 34, 0.9) 100%); border-left: 4px solid var(--electric-cyan);">
+      <div class="card hero-event-banner">
         <div style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 1rem;">
           <div>
             <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem;">
@@ -360,10 +360,10 @@ async function renderOverview() {
               ${profile.city ? `<span class="badge badge-amethyst">📍 ${escapeHTML(profile.city)}</span>` : ''}
               <span class="badge badge-success">ID: ${escapeHTML(profile.event_id)}</span>
             </div>
-            <h1 style="font-size: 1.75rem; font-weight: 800; letter-spacing: -0.02em; margin-bottom: 0.35rem;">
+            <h1 style="font-size: 1.75rem; font-weight: 800; letter-spacing: -0.02em; margin-bottom: 0.35rem; color: var(--color-text);">
               ${escapeHTML(profile.event_name || `${profile.event_type.charAt(0).toUpperCase() + profile.event_type.slice(1)} Plan`)}
             </h1>
-            <p style="color: var(--text-muted); font-size: 0.9rem;">
+            <p style="color: var(--color-text-muted); font-size: 0.9rem;">
               ${escapeHTML(profile.theme_notes || 'No specific theme notes recorded.')}
             </p>
           </div>
@@ -371,7 +371,7 @@ async function renderOverview() {
             <div class="badge badge-amethyst" style="font-size: 0.9rem; padding: 0.45rem 1rem;">
               📅 ${formatDate(profile.event_date)}
             </div>
-            <div style="font-size: 0.85rem; color: var(--electric-cyan); font-weight: 700; margin-top: 0.35rem;">
+            <div style="font-size: 0.85rem; color: var(--color-deep-burgundy); font-weight: 700; margin-top: 0.35rem;">
               ${daysLabel}
             </div>
           </div>
@@ -382,7 +382,7 @@ async function renderOverview() {
       ${readiness ? `
         <div class="overview-readiness-banner" onclick="switchView('readiness')" role="button" tabindex="0" aria-label="View Event Readiness Assessment">
           <div style="display: flex; align-items: center; gap: 1.25rem;">
-            <div style="width: 54px; height: 54px; border-radius: 50%; border: 3px solid ${readiness.overall_score >= 80 ? '#10B981' : (readiness.overall_score >= 60 ? 'var(--electric-cyan)' : '#F59E0B')}; display: flex; align-items: center; justify-content: center; font-family: var(--font-mono); font-weight: 900; font-size: 1.3rem; color: var(--text-primary); background: var(--bg-surface-2);">
+            <div style="width: 54px; height: 54px; border-radius: 50%; border: 3px solid ${readiness.overall_score >= 80 ? 'var(--color-success)' : (readiness.overall_score >= 60 ? 'var(--color-deep-burgundy)' : 'var(--color-warning)')}; display: flex; align-items: center; justify-content: center; font-family: var(--font-mono); font-weight: 900; font-size: 1.3rem; color: var(--color-text); background: var(--color-surface); box-shadow: var(--shadow-xs);">
               ${readiness.overall_score !== null ? readiness.overall_score : '—'}
             </div>
             <div>
@@ -525,7 +525,7 @@ async function renderOverview() {
       </div>
 
       <!-- Foundation Service Status (Preserved from Milestone 1) -->
-      <div class="card" style="background: rgba(10, 4, 20, 0.4); border-color: rgba(91, 20, 160, 0.2);">
+      <div class="card" style="background: var(--color-surface-muted); border-color: var(--color-border);">
         <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem;">
           <div>
             <span style="font-size: 0.825rem; font-weight: 700; color: var(--text-muted);">BACKEND ENGINE STATUS</span>
@@ -1242,7 +1242,7 @@ async function renderCouncil() {
 
     container.innerHTML = `
       <!-- Council Summary Header -->
-      <div class="card" style="margin-bottom: 1.5rem; background: linear-gradient(135deg, rgba(59, 10, 107, 0.4) 0%, rgba(18, 7, 34, 0.9) 100%); border-left: 4px solid var(--electric-cyan);">
+      <div class="card hero-event-banner">
         <div class="card-header">
           <div class="card-title-wrap">
             <div class="card-icon">👥</div>
@@ -1254,47 +1254,47 @@ async function renderCouncil() {
           <span class="badge badge-cyan">SOURCE: ${escapeHTML((envelope.source || 'rules').toUpperCase())}</span>
         </div>
 
-        <p style="font-size: 1rem; color: var(--text-primary); margin-bottom: 1rem; line-height: 1.5;">
+        <p style="font-size: 1rem; color: var(--color-text); margin-bottom: 1rem; line-height: 1.5;">
           ${escapeHTML(summary.overall_verdict || 'Council review in progress.')}
         </p>
 
         <div class="grid-3" style="font-size: 0.85rem;">
-          <div style="background: var(--bg-surface-3); padding: 0.85rem; border-radius: var(--radius-md);">
-            <div style="font-weight: 700; color: var(--success); margin-bottom: 0.35rem;">✓ Strongest Aspects</div>
-            <ul style="list-style: none; color: var(--text-secondary); display: flex; flex-direction: column; gap: 0.25rem;">
+          <div style="background: var(--color-surface-muted); padding: 0.95rem; border-radius: var(--radius-md); border: 1px solid var(--color-border);">
+            <div style="font-weight: 700; color: var(--color-success); margin-bottom: 0.35rem;">✓ Strongest Aspects</div>
+            <ul style="list-style: none; color: var(--color-text); display: flex; flex-direction: column; gap: 0.25rem;">
               ${(summary.strongest_aspects || []).map(s => `<li>• ${escapeHTML(s)}</li>`).join('')}
             </ul>
           </div>
 
-          <div style="background: var(--bg-surface-3); padding: 0.85rem; border-radius: var(--radius-md);">
-            <div style="font-weight: 700; color: var(--warning); margin-bottom: 0.35rem;">⚠ Critical Concerns</div>
-            <ul style="list-style: none; color: var(--text-secondary); display: flex; flex-direction: column; gap: 0.25rem;">
+          <div style="background: var(--color-surface-muted); padding: 0.95rem; border-radius: var(--radius-md); border: 1px solid var(--color-border);">
+            <div style="font-weight: 700; color: var(--color-warning); margin-bottom: 0.35rem;">⚠ Critical Concerns</div>
+            <ul style="list-style: none; color: var(--color-text); display: flex; flex-direction: column; gap: 0.25rem;">
               ${(summary.critical_concerns || []).map(c => `<li>• ${escapeHTML(c)}</li>`).join('')}
             </ul>
           </div>
 
-          <div style="background: var(--bg-surface-3); padding: 0.85rem; border-radius: var(--radius-md);">
-            <div style="font-weight: 700; color: var(--electric-cyan); margin-bottom: 0.35rem;">→ Recommended Actions</div>
-            <ul style="list-style: none; color: var(--text-secondary); display: flex; flex-direction: column; gap: 0.25rem;">
+          <div style="background: var(--color-surface-muted); padding: 0.95rem; border-radius: var(--radius-md); border: 1px solid var(--color-border);">
+            <div style="font-weight: 700; color: var(--color-deep-burgundy); margin-bottom: 0.35rem;">→ Recommended Actions</div>
+            <ul style="list-style: none; color: var(--color-text); display: flex; flex-direction: column; gap: 0.25rem;">
               ${(summary.next_actions || []).map(a => `<li>• ${escapeHTML(a)}</li>`).join('')}
             </ul>
           </div>
         </div>
 
         ${summary.trade_offs?.length ? `
-          <div style="margin-top: 1.25rem; padding-top: 1rem; border-top: 1px solid var(--amethyst-border);">
-            <div style="font-weight: 700; font-size: 0.9rem; color: var(--text-primary); margin-bottom: 0.65rem;">
+          <div style="margin-top: 1.25rem; padding-top: 1rem; border-top: 1px solid var(--color-border);">
+            <div style="font-weight: 700; font-size: 0.9rem; color: var(--color-text); margin-bottom: 0.65rem;">
               Creative Trade-Offs (No False Consensus)
             </div>
             <div style="display: flex; flex-direction: column; gap: 0.65rem;">
               ${summary.trade_offs.map(t => `
-                <div style="background: rgba(10, 4, 20, 0.6); padding: 0.75rem 1rem; border-radius: var(--radius-md); border-left: 3px solid var(--electric-cyan);">
+                <div style="background: var(--color-surface); padding: 0.85rem 1.15rem; border-radius: var(--radius-md); border: 1px solid var(--color-border); border-left: 4px solid var(--color-deep-burgundy);">
                   <div style="display: flex; justify-content: space-between; font-size: 0.85rem; font-weight: 700; margin-bottom: 0.25rem;">
-                    <span style="color: var(--text-primary);">${escapeHTML(t.title)}</span>
-                    <span style="color: var(--electric-cyan);">${escapeHTML(t.perspective_a)} vs. ${escapeHTML(t.perspective_b)}</span>
+                    <span style="color: var(--color-text);">${escapeHTML(t.title)}</span>
+                    <span style="color: var(--color-deep-burgundy); font-weight: 700;">${escapeHTML(t.perspective_a)} vs. ${escapeHTML(t.perspective_b)}</span>
                   </div>
-                  <div style="font-size: 0.825rem; color: var(--text-secondary); margin-bottom: 0.35rem;">${escapeHTML(t.description)}</div>
-                  <div style="font-size: 0.825rem; color: #a7f3d0;"><strong>Suggested Compromise:</strong> ${escapeHTML(t.suggested_compromise)}</div>
+                  <div style="font-size: 0.825rem; color: var(--color-text-muted); margin-bottom: 0.35rem;">${escapeHTML(t.description)}</div>
+                  <div style="font-size: 0.825rem; color: var(--color-success); font-weight: 600;"><strong>Suggested Compromise:</strong> ${escapeHTML(t.suggested_compromise)}</div>
                 </div>
               `).join('')}
             </div>
@@ -1702,7 +1702,7 @@ async function renderCrisis() {
               ${d.relevant_vendor_checklist_ids.length > 0 ? `
                 <div style="display: flex; flex-wrap: wrap; gap: 0.5rem;">
                   ${d.relevant_vendor_checklist_ids.map(id => `
-                    <span style="font-family: var(--font-mono); font-size: 0.75rem; padding: 0.3rem 0.6rem; border-radius: var(--radius-sm); background: rgba(59, 10, 107, 0.4); border: 1px solid var(--amethyst-border); color: var(--text-primary);">
+                    <span style="font-family: var(--font-mono); font-size: 0.75rem; padding: 0.3rem 0.6rem; border-radius: var(--radius-sm); background: var(--color-surface-muted); border: 1px solid var(--color-border); color: var(--color-text);">
                       📋 ${escapeHTML(id)}
                     </span>
                   `).join('')}
@@ -1777,9 +1777,9 @@ async function renderCrisis() {
       </div>
 
       <!-- Escalation & Safety Guidance -->
-      <div class="card" style="border-color: rgba(239, 68, 68, 0.4); margin-bottom: 1.5rem;">
+      <div class="card" style="border-color: var(--color-danger-border); background: var(--color-danger-bg); margin-bottom: 1.5rem;">
         <div class="card-header">
-          <h3 class="card-title" style="color: #ff6b6b;">🚨 Emergency Escalation Guidance</h3>
+          <h3 class="card-title" style="color: var(--color-danger);">🚨 Emergency Escalation Guidance</h3>
         </div>
         <div style="font-size: 0.875rem; color: var(--text-primary); line-height: 1.6; white-space: pre-wrap;">
           ${escapeHTML(d.escalation_guidance)}
@@ -2273,10 +2273,10 @@ function renderRecoveryListView(container, records) {
             ` : ''}
 
             <!-- Progress Bar -->
-            <div style="background: rgba(0, 0, 0, 0.3); border: 1px solid rgba(255, 255, 255, 0.06); border-radius: var(--radius-md); padding: 0.85rem; margin-bottom: 1rem;">
-              <div style="display: flex; justify-content: space-between; align-items: center; font-size: 0.8rem; color: var(--text-muted); margin-bottom: 0.4rem;">
+            <div style="background: var(--color-surface-muted); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 0.85rem; margin-bottom: 1rem;">
+              <div style="display: flex; justify-content: space-between; align-items: center; font-size: 0.8rem; color: var(--color-text-muted); margin-bottom: 0.4rem;">
                 <span>Action Progress</span>
-                <strong style="color: var(--electric-cyan); font-family: var(--font-mono);">${prog.completed_actions} of ${prog.total_actions} Completed (${prog.completion_percentage}%)</strong>
+                <strong style="color: var(--color-deep-burgundy); font-family: var(--font-mono);">${prog.completed_actions} of ${prog.total_actions} Completed (${prog.completion_percentage}%)</strong>
               </div>
               <div class="recovery-progress-bar-wrap">
                 <div class="recovery-progress-bar-fill" style="width: ${prog.completion_percentage}%;"></div>
@@ -2686,7 +2686,7 @@ async function renderReadiness() {
                       <div class="readiness-cat-title">${escapeHTML(cat.name)}</div>
                       <div class="readiness-cat-weight">Weight: ${cat.weight_percentage}%</div>
                     </div>
-                    <div class="readiness-cat-score-pill" style="${!hasScore ? 'color: var(--text-muted); background: rgba(255,255,255,0.05); border-color: rgba(255,255,255,0.1);' : ''}">
+                    <div class="readiness-cat-score-pill" style="${!hasScore ? 'color: var(--color-text-muted); background: var(--color-surface-muted); border-color: var(--color-border);' : ''}">
                       ${scoreVal}${hasScore ? '<span style="font-size: 0.75rem;">/100</span>' : ''}
                     </div>
                   </div>
@@ -2702,7 +2702,7 @@ async function renderReadiness() {
       </div>
 
       <!-- Methodology & Advisory Footer -->
-      <div class="card" style="background: rgba(255,255,255,0.02); border: 1px dashed var(--amethyst-border); padding: 1.25rem;">
+      <div class="card" style="background: var(--color-surface-muted); border: 1px dashed var(--color-border); padding: 1.25rem;">
         <div style="font-size: 0.8rem; color: var(--text-muted); line-height: 1.6;">
           <strong style="color: var(--text-secondary);">Methodology:</strong> ${escapeHTML(data.calculation_method)}
           <br>
@@ -2746,8 +2746,9 @@ function switchView(viewName) {
     sec.classList.toggle('active', sec.id === `view-${viewName}`);
   });
 
-  // Close mobile sidebar if open
+  // Close mobile sidebar & backdrop if open
   document.getElementById('sidebar')?.classList.remove('open');
+  document.getElementById('sidebar-backdrop')?.classList.remove('open');
 
   // Trigger relevant render
   switch (viewName) {
@@ -2917,9 +2918,41 @@ document.addEventListener('DOMContentLoaded', async () => {
     switchView(hash);
   });
 
-  // 3. Mobile sidebar toggle
-  document.getElementById('btn-sidebar-toggle')?.addEventListener('click', () => {
-    document.getElementById('sidebar')?.classList.toggle('open');
+  // 3. Mobile sidebar toggle & backdrop
+  const sidebar = document.getElementById('sidebar');
+  const sidebarBackdrop = document.getElementById('sidebar-backdrop');
+  const btnToggle = document.getElementById('btn-sidebar-toggle');
+  const btnClose = document.getElementById('btn-sidebar-close');
+
+  const openSidebar = () => {
+    sidebar?.classList.add('open');
+    sidebarBackdrop?.classList.add('open');
+  };
+
+  const closeSidebar = () => {
+    sidebar?.classList.remove('open');
+    sidebarBackdrop?.classList.remove('open');
+  };
+
+  btnToggle?.addEventListener('click', () => {
+    if (sidebar?.classList.contains('open')) {
+      closeSidebar();
+    } else {
+      openSidebar();
+    }
+  });
+
+  btnClose?.addEventListener('click', closeSidebar);
+  sidebarBackdrop?.addEventListener('click', closeSidebar);
+
+  // Close modal or drawer on Escape key
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      closeSidebar();
+      closeCreateEventModal();
+      closeVendorModal();
+      closeSaveRecoveryModal();
+    }
   });
 
   // 4. Event Selector Dropdown

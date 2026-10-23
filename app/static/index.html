@@ -14,11 +14,17 @@
   <div class="bg-ambient" aria-hidden="true"></div>
 
   <div class="app-wrapper">
+    <!-- Sidebar Backdrop for Mobile/Tablet -->
+    <div class="sidebar-backdrop" id="sidebar-backdrop" aria-hidden="true"></div>
+
     <!-- Sidebar Navigation -->
     <aside class="sidebar" id="sidebar" aria-label="Main Navigation">
       <div class="sidebar-header">
-        <div class="brand-icon" aria-hidden="true">P</div>
-        <div class="brand-title">PlanProof <span>AI</span></div>
+        <div class="brand-wrap">
+          <div class="brand-icon" aria-hidden="true">P</div>
+          <div class="brand-title">PlanProof <span>AI</span></div>
+        </div>
+        <button class="btn-sidebar-close" id="btn-sidebar-close" aria-label="Close navigation" type="button">×</button>
       </div>
 
       <nav class="sidebar-nav">
@@ -263,7 +269,7 @@
               </select>
             </div>
             <div class="form-group" style="display: flex; align-items: center; gap: 0.5rem; padding-top: 1.8rem;">
-              <input type="checkbox" id="create-in-progress" style="width: 18px; height: 18px; accent-color: var(--electric-cyan);">
+              <input type="checkbox" id="create-in-progress" style="width: 18px; height: 18px; accent-color: var(--color-deep-burgundy);">
               <label for="create-in-progress" class="form-label" style="margin: 0; cursor: pointer;">Event already ongoing / in-progress</label>
             </div>
           </div>
@@ -368,7 +374,7 @@
           <div class="form-group">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
               <label class="form-label" style="margin-bottom: 0;">Recommended Actions to Track</label>
-              <div style="font-size: 0.8rem; color: var(--electric-cyan);">
+              <div style="font-size: 0.8rem; color: var(--color-deep-burgundy); font-weight: 700;">
                 <button type="button" class="btn-text-link" id="btn-select-all-actions">Select All</button> · 
                 <button type="button" class="btn-text-link" id="btn-deselect-all-actions">Deselect All</button>
               </div>
