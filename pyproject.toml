@@ -19,6 +19,8 @@ dependencies = [
     "pydantic-settings>=2.4.0",
     "google-genai>=1.0.0",
     "python-dotenv>=1.0.1",
+    "asyncpg>=0.29.0",
+    "PyJWT[crypto]>=2.9.0",
 ]
 
 [project.optional-dependencies]

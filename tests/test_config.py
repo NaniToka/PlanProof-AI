@@ -109,3 +109,101 @@ def test_cors_json_string_parsing() -> None:
         "https://app.planproof.in",
         "https://admin.planproof.in",
     ]
+
+
+def test_supabase_settings_default_to_none() -> None:
+    """Verify that optional Supabase and database settings default to None."""
+    settings = Settings()
+    assert settings.supabase_url is None
+    assert settings.supabase_anon_key is None
+    assert settings.supabase_jwt_secret is None
+    assert settings.database_url is None
+    assert settings.is_supabase_configured is False
+    assert settings.is_database_configured is False
+    assert settings.get_supabase_anon_key_value() is None
+    assert settings.get_supabase_jwt_secret_value() is None
+    assert settings.get_database_url_value() is None
+
+
+def test_supabase_settings_loaded_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify that Supabase and PostgreSQL settings load properly from environment variables."""
+    test_url = "https://my-test-proj.supabase.co"
+    test_anon = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.test-anon-key"
+    test_jwt_secret = "super-secret-jwt-signing-key-12345"
+    test_db = "postgresql://postgres:dbpass@localhost:5432/testdb"
+
+    monkeypatch.setenv("SUPABASE_URL", test_url)
+    monkeypatch.setenv("SUPABASE_ANON_KEY", test_anon)
+    monkeypatch.setenv("SUPABASE_JWT_SECRET", test_jwt_secret)
+    monkeypatch.setenv("DATABASE_URL", test_db)
+
+    settings = Settings()
+    assert settings.supabase_url == test_url
+    assert settings.is_supabase_configured is True
+    assert settings.is_database_configured is True
+    assert settings.get_supabase_anon_key_value() == test_anon
+    assert settings.get_supabase_jwt_secret_value() == test_jwt_secret
+    assert settings.get_database_url_value() == test_db
+
+
+def test_supabase_secret_masking_in_repr_and_str() -> None:
+    """Verify that sensitive Supabase keys and database URLs are masked in repr and str."""
+    anon_key = "sensitive-anon-key-123"
+    jwt_secret = "sensitive-jwt-secret-456"
+    db_pass = "top-secret-db-password"
+    db_url = f"postgresql://postgres:{db_pass}@db.supabase.co:5432/postgres"
+
+    settings = Settings(
+        supabase_anon_key=SecretStr(anon_key),
+        supabase_jwt_secret=SecretStr(jwt_secret),
+        database_url=SecretStr(db_url),
+    )
+
+    settings_repr = repr(settings)
+    settings_str = str(settings)
+
+    # Sensitive values must never appear in repr or str
+    assert anon_key not in settings_repr
+    assert jwt_secret not in settings_repr
+    assert db_pass not in settings_repr
+    assert anon_key not in settings_str
+    assert jwt_secret not in settings_str
+    assert db_pass not in settings_str
+
+
+def test_empty_supabase_strings_handled_as_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify that blank or whitespace-only Supabase env vars are treated as None."""
+    monkeypatch.setenv("SUPABASE_URL", "   ")
+    monkeypatch.setenv("SUPABASE_ANON_KEY", "")
+    monkeypatch.setenv("SUPABASE_JWT_SECRET", " ")
+    monkeypatch.setenv("DATABASE_URL", "")
+
+    settings = Settings()
+    assert settings.supabase_url is None
+    assert settings.supabase_anon_key is None
+    assert settings.supabase_jwt_secret is None
+    assert settings.database_url is None
+    assert settings.is_supabase_configured is False
+    assert settings.is_database_configured is False
+
+
+def test_invalid_supabase_url_rejected() -> None:
+    """Verify that non-HTTP/HTTPS URLs for SUPABASE_URL raise validation errors."""
+    with pytest.raises(ValidationError) as exc:
+        Settings(supabase_url="not-a-valid-url")
+    assert "Invalid SUPABASE_URL" in str(exc.value)
+
+    with pytest.raises(ValidationError):
+        Settings(supabase_url="ftp://supabase.co")
+
+
+def test_app_starts_without_supabase_configured() -> None:
+    """Verify that FastAPI application initializes and responds normally without Supabase."""
+    from fastapi.testclient import TestClient
+    from app.main import create_app
+
+    app = create_app(settings=Settings())
+    with TestClient(app) as client:
+        res = client.get("/health")
+        assert res.status_code == 200
+        assert res.json()["status"] == "ok"

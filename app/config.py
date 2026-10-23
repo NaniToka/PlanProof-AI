@@ -117,6 +117,24 @@ class Settings(BaseSettings):
         description="Maximum character length for free-text inputs",
     )
 
+    # Supabase & PostgreSQL Configuration (optional)
+    supabase_url: str | None = Field(
+        default=None,
+        description="Supabase project URL (e.g. https://xyzcompany.supabase.co)",
+    )
+    supabase_anon_key: SecretStr | None = Field(
+        default=None,
+        description="Supabase anonymous public API key (client-safe)",
+    )
+    supabase_jwt_secret: SecretStr | None = Field(
+        default=None,
+        description="Supabase JWT secret for backend token signature verification",
+    )
+    database_url: SecretStr | None = Field(
+        default=None,
+        description="PostgreSQL database connection URL (e.g. Supabase connection pooler)",
+    )
+
     # CORS origins (typed as list[str] | str to avoid premature json.loads in pydantic-settings)
     allowed_cors_origins: list[str] | str = Field(
         default=["*"],
@@ -135,9 +153,60 @@ class Settings(BaseSettings):
         """Backward-compatible alias for app_env."""
         return self.app_env
 
+    @property
+    def is_supabase_configured(self) -> bool:
+        """Return True if Supabase project URL and anon key are both configured."""
+        return bool(self.supabase_url and self.supabase_anon_key)
+
+    @property
+    def is_database_configured(self) -> bool:
+        """Return True if PostgreSQL database URL is configured."""
+        return bool(self.database_url)
+
     def get_gemini_api_key_value(self) -> str | None:
         """Safely expose the raw API key without leaking it in repr/str."""
         return self.gemini_api_key.get_secret_value() if self.gemini_api_key else None
+
+    def get_supabase_anon_key_value(self) -> str | None:
+        """Safely expose raw Supabase anon key without leaking in repr/str."""
+        return self.supabase_anon_key.get_secret_value() if self.supabase_anon_key else None
+
+    def get_supabase_jwt_secret_value(self) -> str | None:
+        """Safely expose raw Supabase JWT secret without leaking in repr/str."""
+        return self.supabase_jwt_secret.get_secret_value() if self.supabase_jwt_secret else None
+
+    def get_database_url_value(self) -> str | None:
+        """Safely expose raw Database URL without leaking in repr/str."""
+        return self.database_url.get_secret_value() if self.database_url else None
+
+    @field_validator(
+        "gemini_api_key",
+        "supabase_url",
+        "supabase_anon_key",
+        "supabase_jwt_secret",
+        "database_url",
+        mode="before",
+    )
+    @classmethod
+    def empty_string_to_none(cls, value: Any) -> Any:
+        """Convert empty or whitespace-only strings to None for optional credentials."""
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @field_validator("supabase_url")
+    @classmethod
+    def validate_supabase_url(cls, value: str | None) -> str | None:
+        """Validate that Supabase URL starts with http:// or https:// if provided."""
+        if value is None:
+            return None
+        s = value.strip().rstrip("/")
+        if not s:
+            return None
+        parsed = urlparse(s)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            raise ValueError(f"Invalid SUPABASE_URL '{s}'. Must start with 'http://' or 'https://'")
+        return s
 
     @field_validator("ai_mode", mode="before")
     @classmethod
