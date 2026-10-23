@@ -134,6 +134,27 @@ class Settings(BaseSettings):
         default=None,
         description="PostgreSQL database connection URL (e.g. Supabase connection pooler)",
     )
+    storage_backend: str = Field(
+        default="memory",
+        description="Event storage repository backend: 'memory' (default) or 'postgres'",
+    )
+    database_pool_min_size: int = Field(
+        default=1,
+        ge=1,
+        le=20,
+        description="Minimum PostgreSQL connection pool size",
+    )
+    database_pool_max_size: int = Field(
+        default=10,
+        ge=1,
+        le=100,
+        description="Maximum PostgreSQL connection pool size",
+    )
+    database_connection_timeout: float = Field(
+        default=10.0,
+        gt=0.0,
+        description="Timeout in seconds for establishing PostgreSQL connections",
+    )
 
     # CORS origins (typed as list[str] | str to avoid premature json.loads in pydantic-settings)
     allowed_cors_origins: list[str] | str = Field(
@@ -224,6 +245,19 @@ class Settings(BaseSettings):
                     f"Invalid AI_MODE '{value}'. Must be one of: {', '.join(valid_modes)}"
                 )
         raise ValueError(f"Invalid AI_MODE '{value}'. Must be a string")
+
+    @field_validator("storage_backend", mode="before")
+    @classmethod
+    def validate_storage_backend(cls, value: Any) -> str:
+        """Validate and normalize storage backend option ('memory' or 'postgres')."""
+        if isinstance(value, str):
+            cleaned = value.strip().lower()
+            if cleaned not in ("memory", "postgres"):
+                raise ValueError(
+                    f"Invalid STORAGE_BACKEND '{value}'. Must be 'memory' or 'postgres'"
+                )
+            return cleaned
+        raise ValueError(f"Invalid STORAGE_BACKEND '{value}'. Must be a string")
 
     @field_validator("allowed_cors_origins")
     @classmethod

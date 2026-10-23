@@ -13,6 +13,7 @@ CREATE SCHEMA IF NOT EXISTS auth;
 CREATE TABLE IF NOT EXISTS auth.users (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     email TEXT UNIQUE,
+    raw_user_meta_data JSONB DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ DEFAULT timezone('utc', now()),
     updated_at TIMESTAMPTZ DEFAULT timezone('utc', now())
 );

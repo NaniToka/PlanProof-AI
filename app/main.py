@@ -57,6 +57,13 @@ from app.schemas import (
     TrackedRecoveryAction,
     EventReadinessResponse,
 )
+from app.repositories import (
+    BaseEventRepository,
+    DatabaseConnectionError,
+    InMemoryEventRepository,
+    RepositoryError,
+    create_event_repository,
+)
 from app.services.ai_orchestrator import AIOrchestrator
 from app.services.crisis_service import SUPPORTED_CRISIS_TYPES
 from app.services.event_service import EventService, EventStore
@@ -113,15 +120,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             settings=app_settings, gemini_service=gemini_svc
         )
 
-        # 4. Initialize Event Profile Store & Service
-        event_store = EventStore()
-        app.state.event_store = event_store
-        app.state.event_service = EventService(
-            store=event_store,
-            dataset_repo=repo,
-            settings=app_settings,
-        )
-        yield
+        # 4. Initialize Event Profile Repository & Service
+        repo_storage = getattr(app.state, "event_repository", None) or getattr(app.state, "event_store", None)
+        if repo_storage is None:
+            repo_storage = create_event_repository(app_settings)
+            await repo_storage.connect()
+            app.state.event_repository = repo_storage
+            app.state.event_store = repo_storage
+
+        if not getattr(app.state, "event_service", None):
+            app.state.event_service = EventService(
+                store=repo_storage,
+                dataset_repo=repo,
+                settings=app_settings,
+            )
+        try:
+            yield
+        finally:
+            await repo_storage.disconnect()
 
     app = FastAPI(
         title=app_settings.app_name,
@@ -135,10 +151,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.ai_orchestrator = AIOrchestrator(
         settings=app_settings, gemini_service=gemini_svc_init
     )
-    event_store_init = EventStore()
-    app.state.event_store = event_store_init
+    repo_storage_init = create_event_repository(app_settings)
+    app.state.event_repository = repo_storage_init
+    app.state.event_store = repo_storage_init
     app.state.event_service = EventService(
-        store=event_store_init,
+        store=repo_storage_init,
         dataset_repo=None,
         settings=app_settings,
     )
@@ -240,6 +257,40 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "error": {
                     "code": "CONFIGURATION_ERROR",
                     "message": f"Configuration error: {safe_msg}",
+                    "details": None,
+                }
+            },
+        )
+
+    @app.exception_handler(DatabaseConnectionError)
+    async def database_connection_exception_handler(
+        _request: Request, exc: DatabaseConnectionError
+    ) -> JSONResponse:
+        """Handle database connection failures predictably without leaking secrets."""
+        logger.error("Database connection failure: %s", exc)
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={
+                "error": {
+                    "code": "DATABASE_UNAVAILABLE",
+                    "message": "Database storage is temporarily unavailable. Please try again later.",
+                    "details": None,
+                }
+            },
+        )
+
+    @app.exception_handler(RepositoryError)
+    async def repository_exception_handler(
+        _request: Request, exc: RepositoryError
+    ) -> JSONResponse:
+        """Handle repository domain failures predictably."""
+        logger.error("Repository error: %s", exc)
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={
+                "error": {
+                    "code": "REPOSITORY_ERROR",
+                    "message": "A data persistence error occurred.",
                     "details": None,
                 }
             },
@@ -430,18 +481,33 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             request.app.state.ai_orchestrator = orchestrator
         return orchestrator
 
+    def get_event_repository(
+        request: Request,
+        current_settings: Settings = Depends(get_settings),
+    ) -> BaseEventRepository:
+        """Dependency resolving application-level event repository."""
+        repo: BaseEventRepository | None = (
+            getattr(request.app.state, "event_repository", None)
+            or getattr(request.app.state, "event_store", None)
+        )
+        if repo is None:
+            active_settings = getattr(request.app.state, "settings", current_settings)
+            repo = create_event_repository(active_settings)
+            request.app.state.event_repository = repo
+            request.app.state.event_store = repo
+        return repo
+
     def get_event_service(
         request: Request,
         current_settings: Settings = Depends(get_settings),
+        repository: BaseEventRepository = Depends(get_event_repository),
     ) -> EventService:
         """Dependency resolving application-level event service."""
         service: EventService | None = getattr(request.app.state, "event_service", None)
         if service is None:
             active_settings = getattr(request.app.state, "settings", current_settings)
-            store = getattr(request.app.state, "event_store", None) or EventStore()
             repo = getattr(request.app.state, "dataset_repo", None)
-            service = EventService(store=store, dataset_repo=repo, settings=active_settings)
-            request.app.state.event_store = store
+            service = EventService(store=repository, dataset_repo=repo, settings=active_settings)
             request.app.state.event_service = service
         return service
 
