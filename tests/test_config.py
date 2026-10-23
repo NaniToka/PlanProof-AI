@@ -207,3 +207,64 @@ def test_app_starts_without_supabase_configured() -> None:
         res = client.get("/health")
         assert res.status_code == 200
         assert res.json()["status"] == "ok"
+
+
+def test_jwt_auth_defaults_and_resolution() -> None:
+    """Verify defaults for JWT audience, algorithms allowlist, and derived JWKS/issuer."""
+    settings = Settings()
+    assert settings.supabase_jwt_audience == "authenticated"
+    assert settings.supabase_jwt_algorithms == ["HS256", "RS256", "ES256"]
+    assert settings.supabase_jwt_public_key is None
+    assert settings.supabase_jwks_url is None
+    assert settings.supabase_jwt_issuer is None
+    assert settings.allow_guest_mode is True
+    assert settings.is_auth_configured is False
+    assert settings.resolved_jwks_url is None
+    assert settings.resolved_jwt_issuer is None
+
+
+def test_jwt_auth_derived_from_supabase_url() -> None:
+    """Verify JWKS URL and issuer are properly derived from supabase_url."""
+    settings = Settings(supabase_url="https://xyzproject.supabase.co")
+    assert settings.is_auth_configured is True
+    assert settings.resolved_jwks_url == "https://xyzproject.supabase.co/auth/v1/.well-known/jwks.json"
+    assert settings.resolved_jwt_issuer == "https://xyzproject.supabase.co/auth/v1"
+
+
+def test_jwt_auth_explicit_overrides() -> None:
+    """Verify explicit JWKS URL and issuer overrides take precedence."""
+    settings = Settings(
+        supabase_url="https://xyzproject.supabase.co",
+        supabase_jwks_url="https://custom-jwks.example.com/keys.json",
+        supabase_jwt_issuer="https://custom-auth.example.com",
+    )
+    assert settings.resolved_jwks_url == "https://custom-jwks.example.com/keys.json"
+    assert settings.resolved_jwt_issuer == "https://custom-auth.example.com"
+
+
+def test_jwt_algorithm_validation() -> None:
+    """Verify JWT algorithm parsing, allowlist validation, and 'none' algorithm rejection."""
+    # Comma-separated string parsing
+    s = Settings(supabase_jwt_algorithms="HS256, RS256")
+    assert s.supabase_jwt_algorithms == ["HS256", "RS256"]
+
+    # Reject unsigned 'none' algorithm
+    with pytest.raises(ValidationError) as exc:
+        Settings(supabase_jwt_algorithms="none")
+    assert "Unsigned JWT algorithm 'none' is strictly forbidden" in str(exc.value)
+
+    # Reject unknown algorithm
+    with pytest.raises(ValidationError) as exc:
+        Settings(supabase_jwt_algorithms="UNSUPPORTED_ALG")
+    assert "Unsupported JWT signing algorithm" in str(exc.value)
+
+
+def test_jwt_public_key_masking() -> None:
+    """Verify that public key PEM is masked in repr and str."""
+    pem_data = "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8A\n-----END PUBLIC KEY-----"
+    settings = Settings(supabase_jwt_public_key=SecretStr(pem_data))
+    assert pem_data not in repr(settings)
+    assert pem_data not in str(settings)
+    assert settings.get_supabase_jwt_public_key_value() == pem_data
+    assert settings.is_auth_configured is True
+

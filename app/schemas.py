@@ -15,6 +15,7 @@ import re
 from datetime import date, datetime, timedelta, timezone
 from enum import StrEnum
 from typing import Any, Generic, Literal, TypeVar
+from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -810,6 +811,7 @@ class EventProfile(BaseModel):
     """Complete domain model representing an event profile."""
 
     event_id: str = Field(..., description="Server-generated unique identifier (e.g. EV-...)")
+    user_id: UUID | None = Field(default=None, description="Owning user identifier")
     event_type: EventType = Field(
         ..., description="Event category: wedding, birthday, community_event"
     )

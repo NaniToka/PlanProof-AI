@@ -130,6 +130,30 @@ class Settings(BaseSettings):
         default=None,
         description="Supabase JWT secret for backend token signature verification",
     )
+    supabase_jwt_audience: str = Field(
+        default="authenticated",
+        description="Expected JWT aud claim for Supabase access tokens",
+    )
+    supabase_jwt_algorithms: list[str] | str = Field(
+        default=["HS256", "RS256", "ES256"],
+        description="Allowed JWT signing algorithms (explicit allowlist; 'none' is rejected)",
+    )
+    supabase_jwt_public_key: SecretStr | None = Field(
+        default=None,
+        description="Optional PEM-formatted public key for asymmetric JWT verification",
+    )
+    supabase_jwks_url: str | None = Field(
+        default=None,
+        description="Explicit JWKS endpoint URL for asymmetric JWT verification",
+    )
+    supabase_jwt_issuer: str | None = Field(
+        default=None,
+        description="Expected JWT iss claim (e.g. https://<project>.supabase.co/auth/v1)",
+    )
+    allow_guest_mode: bool = Field(
+        default=True,
+        description="Allow unauthenticated guest access for ephemeral in-memory sessions",
+    )
     database_url: SecretStr | None = Field(
         default=None,
         description="PostgreSQL database connection URL (e.g. Supabase connection pooler)",
@@ -184,6 +208,34 @@ class Settings(BaseSettings):
         """Return True if PostgreSQL database URL is configured."""
         return bool(self.database_url)
 
+    @property
+    def is_auth_configured(self) -> bool:
+        """Return True if any JWT verification method (secret, public key, JWKS, or URL) is set."""
+        return bool(
+            self.supabase_jwt_secret
+            or self.supabase_jwt_public_key
+            or self.supabase_jwks_url
+            or self.supabase_url
+        )
+
+    @property
+    def resolved_jwks_url(self) -> str | None:
+        """Derive the JWKS endpoint URL from explicit override or supabase_url."""
+        if self.supabase_jwks_url:
+            return self.supabase_jwks_url
+        if self.supabase_url:
+            return f"{self.supabase_url.rstrip('/')}/auth/v1/.well-known/jwks.json"
+        return None
+
+    @property
+    def resolved_jwt_issuer(self) -> str | None:
+        """Derive expected JWT issuer from explicit override or supabase_url."""
+        if self.supabase_jwt_issuer:
+            return self.supabase_jwt_issuer
+        if self.supabase_url:
+            return f"{self.supabase_url.rstrip('/')}/auth/v1"
+        return None
+
     def get_gemini_api_key_value(self) -> str | None:
         """Safely expose the raw API key without leaking it in repr/str."""
         return self.gemini_api_key.get_secret_value() if self.gemini_api_key else None
@@ -196,6 +248,10 @@ class Settings(BaseSettings):
         """Safely expose raw Supabase JWT secret without leaking in repr/str."""
         return self.supabase_jwt_secret.get_secret_value() if self.supabase_jwt_secret else None
 
+    def get_supabase_jwt_public_key_value(self) -> str | None:
+        """Safely expose raw Supabase JWT public key PEM without leaking in repr/str."""
+        return self.supabase_jwt_public_key.get_secret_value() if self.supabase_jwt_public_key else None
+
     def get_database_url_value(self) -> str | None:
         """Safely expose raw Database URL without leaking in repr/str."""
         return self.database_url.get_secret_value() if self.database_url else None
@@ -205,6 +261,9 @@ class Settings(BaseSettings):
         "supabase_url",
         "supabase_anon_key",
         "supabase_jwt_secret",
+        "supabase_jwt_public_key",
+        "supabase_jwks_url",
+        "supabase_jwt_issuer",
         "database_url",
         mode="before",
     )
@@ -215,7 +274,40 @@ class Settings(BaseSettings):
             return None
         return value
 
-    @field_validator("supabase_url")
+    @field_validator("supabase_jwt_algorithms", mode="before")
+    @classmethod
+    def validate_jwt_algorithms(cls, value: Any) -> list[str]:
+        """Validate explicit JWT algorithm allowlist, strictly rejecting 'none'."""
+        if isinstance(value, str):
+            stripped = value.strip()
+            if stripped.startswith("[") and stripped.endswith("]"):
+                try:
+                    parsed = json.loads(stripped)
+                    if isinstance(parsed, list):
+                        value = parsed
+                except json.JSONDecodeError as err:
+                    raise ValueError(f"Malformed JSON in JWT algorithms: {err}") from err
+            else:
+                value = [item.strip() for item in stripped.split(",") if item.strip()]
+
+        if not isinstance(value, list) or not value:
+            raise ValueError("SUPABASE_JWT_ALGORITHMS must be a non-empty list or comma-separated string")
+
+        validated: list[str] = []
+        for alg in value:
+            if not isinstance(alg, str) or not alg.strip():
+                raise ValueError("JWT algorithm entries cannot be empty or non-string")
+            normalized = alg.strip().upper()
+            if normalized == "NONE":
+                raise ValueError("Unsigned JWT algorithm 'none' is strictly forbidden")
+            if normalized not in ("HS256", "HS384", "HS512", "RS256", "RS384", "RS512", "ES256", "ES384", "ES512"):
+                raise ValueError(f"Unsupported JWT signing algorithm: '{normalized}'")
+            if normalized not in validated:
+                validated.append(normalized)
+
+        return validated
+
+    @field_validator("supabase_url", "supabase_jwks_url")
     @classmethod
     def validate_supabase_url(cls, value: str | None) -> str | None:
         """Validate that Supabase URL starts with http:// or https:// if provided."""

@@ -70,65 +70,74 @@ class BaseEventRepository(ABC):
     # --------------------------------------------------------------------------
 
     @abstractmethod
-    async def create(self, profile: EventProfile) -> EventProfile:
+    async def create(self, profile: EventProfile, user_id: UUID | None = None) -> EventProfile:
         """Insert a new event profile into storage.
 
         Args:
             profile: Complete domain model to persist.
+            user_id: Verified owning user UUID.
 
         Returns:
             The stored EventProfile.
         """
 
     @abstractmethod
-    async def get(self, event_id: str) -> EventProfile | None:
-        """Retrieve an event profile by its unique identifier.
+    async def get(self, event_id: str, user_id: UUID | None = None) -> EventProfile | None:
+        """Retrieve an event profile by its unique identifier, scoped to user_id.
 
         Args:
             event_id: The event ID (e.g. EV-...)
+            user_id: Optional owning user UUID to enforce tenant isolation.
 
         Returns:
-            The matching EventProfile, or None if not found.
+            The matching EventProfile if found and owned, or None otherwise.
         """
 
     @abstractmethod
-    async def update(self, event_id: str, profile: EventProfile) -> EventProfile | None:
-        """Update an existing event profile.
+    async def update(
+        self, event_id: str, profile: EventProfile, user_id: UUID | None = None
+    ) -> EventProfile | None:
+        """Update an existing event profile scoped to user_id.
 
         Args:
             event_id: The event ID to update.
             profile: The updated profile data.
+            user_id: Optional owning user UUID to enforce tenant isolation.
 
         Returns:
-            The updated EventProfile, or None if the event does not exist.
+            The updated EventProfile, or None if the event does not exist or is unauthorized.
         """
 
     @abstractmethod
-    async def list(self, skip: int = 0, limit: int = 50) -> tuple[list[EventProfile], int]:
-        """Return a paginated slice of stored events and the total count.
+    async def list(
+        self, skip: int = 0, limit: int = 50, user_id: UUID | None = None
+    ) -> tuple[list[EventProfile], int]:
+        """Return a paginated slice of stored events and total count, scoped to user_id.
 
         Args:
             skip: Offset of records to skip.
             limit: Maximum records to return.
+            user_id: Optional owning user UUID to filter tenant events.
 
         Returns:
             Tuple of (list of events, total count).
         """
 
     @abstractmethod
-    async def delete(self, event_id: str) -> bool:
-        """Delete an event profile from storage.
+    async def delete(self, event_id: str, user_id: UUID | None = None) -> bool:
+        """Delete an event profile from storage scoped to user_id.
 
         Args:
             event_id: The event ID to delete.
+            user_id: Optional owning user UUID to enforce tenant isolation.
 
         Returns:
-            True if removed, False if not found.
+            True if removed, False if not found or unauthorized.
         """
 
     @abstractmethod
-    async def count(self) -> int:
-        """Return the total number of events currently stored."""
+    async def count(self, user_id: UUID | None = None) -> int:
+        """Return the total number of events currently stored, optionally scoped to user_id."""
 
     @abstractmethod
     async def clear(self) -> None:
@@ -138,16 +147,18 @@ class BaseEventRepository(ABC):
     # Granular Domain Persistence Operations
     # --------------------------------------------------------------------------
 
-    async def get_budget(self, event_id: str) -> EventBudgetBreakdown | None:
+    async def get_budget(
+        self, event_id: str, user_id: UUID | None = None
+    ) -> EventBudgetBreakdown | None:
         """Retrieve the budget allocation breakdown for an event."""
-        profile = await self.get(event_id)
+        profile = await self.get(event_id, user_id=user_id)
         return profile.budget if profile else None
 
     async def save_budget(
-        self, event_id: str, budget: EventBudgetBreakdown
+        self, event_id: str, budget: EventBudgetBreakdown, user_id: UUID | None = None
     ) -> EventBudgetBreakdown | None:
         """Persist budget allocations for an event."""
-        profile = await self.get(event_id)
+        profile = await self.get(event_id, user_id=user_id)
         if not profile:
             return None
         updated = profile.model_copy(
@@ -157,19 +168,21 @@ class BaseEventRepository(ABC):
                 "updated_at": datetime.now(timezone.utc),
             }
         )
-        saved = await self.update(event_id, updated)
+        saved = await self.update(event_id, updated, user_id=user_id)
         return saved.budget if saved else None
 
-    async def get_milestone_statuses(self, event_id: str) -> dict[str, MilestoneStatus] | None:
+    async def get_milestone_statuses(
+        self, event_id: str, user_id: UUID | None = None
+    ) -> dict[str, MilestoneStatus] | None:
         """Retrieve milestone completion status overrides for an event."""
-        profile = await self.get(event_id)
+        profile = await self.get(event_id, user_id=user_id)
         return profile.milestone_statuses if profile else None
 
     async def save_milestone_status(
-        self, event_id: str, milestone_id: str, status: MilestoneStatus
+        self, event_id: str, milestone_id: str, status: MilestoneStatus, user_id: UUID | None = None
     ) -> dict[str, MilestoneStatus] | None:
         """Update or insert a milestone status override for an event."""
-        profile = await self.get(event_id)
+        profile = await self.get(event_id, user_id=user_id)
         if not profile:
             return None
         statuses = dict(profile.milestone_statuses)
@@ -180,21 +193,21 @@ class BaseEventRepository(ABC):
                 "updated_at": datetime.now(timezone.utc),
             }
         )
-        saved = await self.update(event_id, updated)
+        saved = await self.update(event_id, updated, user_id=user_id)
         return saved.milestone_statuses if saved else None
 
     async def get_vendor_checklist(
-        self, event_id: str
+        self, event_id: str, user_id: UUID | None = None
     ) -> list[EventVendorChecklistItem] | None:
         """Retrieve the vendor checklist items for an event."""
-        profile = await self.get(event_id)
+        profile = await self.get(event_id, user_id=user_id)
         return profile.vendor_checklist if profile else None
 
     async def save_vendor_checklist_item(
-        self, event_id: str, item: EventVendorChecklistItem
+        self, event_id: str, item: EventVendorChecklistItem, user_id: UUID | None = None
     ) -> EventVendorChecklistItem | None:
         """Update or insert an individual vendor checklist item."""
-        profile = await self.get(event_id)
+        profile = await self.get(event_id, user_id=user_id)
         if not profile:
             return None
         items = list(profile.vendor_checklist)
@@ -209,16 +222,16 @@ class BaseEventRepository(ABC):
                 "updated_at": datetime.now(timezone.utc),
             }
         )
-        saved = await self.update(event_id, updated)
+        saved = await self.update(event_id, updated, user_id=user_id)
         if not saved:
             return None
         return next((x for x in saved.vendor_checklist if x.id == item.id), None)
 
     async def create_recovery_record(
-        self, event_id: str, record: CrisisRecoveryRecord
+        self, event_id: str, record: CrisisRecoveryRecord, user_id: UUID | None = None
     ) -> CrisisRecoveryRecord | None:
         """Append a historical crisis recovery record to an event."""
-        profile = await self.get(event_id)
+        profile = await self.get(event_id, user_id=user_id)
         if not profile:
             return None
         records = [record] + list(profile.recovery_records)
@@ -228,25 +241,25 @@ class BaseEventRepository(ABC):
                 "updated_at": datetime.now(timezone.utc),
             }
         )
-        saved = await self.update(event_id, updated)
+        saved = await self.update(event_id, updated, user_id=user_id)
         if not saved:
             return None
         return next((r for r in saved.recovery_records if r.recovery_id == record.recovery_id), None)
 
     async def get_recovery_record(
-        self, event_id: str, recovery_id: str
+        self, event_id: str, recovery_id: str, user_id: UUID | None = None
     ) -> CrisisRecoveryRecord | None:
         """Retrieve a specific crisis recovery record for an event."""
-        profile = await self.get(event_id)
+        profile = await self.get(event_id, user_id=user_id)
         if not profile:
             return None
         return next((r for r in profile.recovery_records if r.recovery_id == recovery_id), None)
 
     async def list_recovery_records(
-        self, event_id: str
+        self, event_id: str, user_id: UUID | None = None
     ) -> list[CrisisRecoveryRecord] | None:
         """Retrieve all recovery records for an event ordered newest first."""
-        profile = await self.get(event_id)
+        profile = await self.get(event_id, user_id=user_id)
         if not profile:
             return None
         return sorted(profile.recovery_records, key=lambda r: r.created_at, reverse=True)
@@ -257,9 +270,10 @@ class BaseEventRepository(ABC):
         recovery_id: str,
         status: RecoveryStatus | None = None,
         description: str | None = None,
+        user_id: UUID | None = None,
     ) -> CrisisRecoveryRecord | None:
         """Update header attributes of an existing crisis recovery record."""
-        profile = await self.get(event_id)
+        profile = await self.get(event_id, user_id=user_id)
         if not profile:
             return None
         records = list(profile.recovery_records)
@@ -278,6 +292,7 @@ class BaseEventRepository(ABC):
             profile.model_copy(
                 update={"recovery_records": records, "updated_at": datetime.now(timezone.utc)}
             ),
+            user_id=user_id,
         )
         if not saved:
             return None
@@ -290,9 +305,10 @@ class BaseEventRepository(ABC):
         action_id: str,
         status: RecoveryActionStatus | None = None,
         notes: str | None = None,
+        user_id: UUID | None = None,
     ) -> TrackedRecoveryAction | None:
         """Update execution status or host notes on a tracked recovery action."""
-        profile = await self.get(event_id)
+        profile = await self.get(event_id, user_id=user_id)
         if not profile:
             return None
         records = list(profile.recovery_records)
@@ -324,6 +340,7 @@ class BaseEventRepository(ABC):
             profile.model_copy(
                 update={"recovery_records": records, "updated_at": datetime.now(timezone.utc)}
             ),
+            user_id=user_id,
         )
         if not saved:
             return None

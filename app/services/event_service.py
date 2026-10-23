@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import date, datetime, timedelta, timezone
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from app.config import AIMode, Settings, get_settings
 from app.data_loader import DatasetRepository
@@ -132,11 +132,14 @@ class EventService:
         self.dataset_repo = dataset_repo
         self.settings = settings or get_settings()
 
-    async def create_event(self, request: EventCreateRequest) -> EventProfile:
+    async def create_event(
+        self, request: EventCreateRequest, user_id: UUID | None = None
+    ) -> EventProfile:
         """Create a new event profile, calculate its initial budget, and store it.
 
         Args:
             request: Validated event creation request data.
+            user_id: Optional authenticated user UUID or guest session identifier.
 
         Returns:
             The created EventProfile populated with server-generated ID, timestamps,
@@ -163,6 +166,7 @@ class EventService:
 
         profile = EventProfile(
             event_id=event_id,
+            user_id=user_id,
             event_type=request.event_type,
             event_name=request.event_name,
             city=request.city,
@@ -179,7 +183,7 @@ class EventService:
             updated_at=now,
         )
 
-        await self.store.create(profile)
+        await self.store.create(profile, user_id=user_id)
         # Safe logging: Never log customer theme notes, PII, or free text
         logger.info(
             "Created event profile %s (type=%s, tier=%s, guests=%d)",
@@ -190,23 +194,29 @@ class EventService:
         )
         return profile
 
-    async def get_event(self, event_id: str) -> EventProfile | None:
-        """Retrieve an event profile by event_id."""
-        return await self.store.get(event_id)
+    async def get_event(
+        self, event_id: str, user_id: UUID | None = None
+    ) -> EventProfile | None:
+        """Retrieve an event profile by event_id, scoped to user_id if provided."""
+        return await self.store.get(event_id, user_id=user_id)
 
     async def update_event(
-        self, event_id: str, request: EventUpdateRequest
+        self,
+        event_id: str,
+        request: EventUpdateRequest,
+        user_id: UUID | None = None,
     ) -> EventProfile | None:
         """Apply partial updates to an existing event profile and recompute budget if needed.
 
         Args:
             event_id: Unique event identifier.
             request: Fields to update.
+            user_id: Optional authenticated user UUID or guest session identifier.
 
         Returns:
             Updated EventProfile, or None if the event does not exist.
         """
-        existing = await self.store.get(event_id)
+        existing = await self.store.get(event_id, user_id=user_id)
         if existing is None:
             return None
 
@@ -251,9 +261,10 @@ class EventService:
 
         now = datetime.now(timezone.utc)
 
-        # Build updated profile preserving server-generated fields
+        # Build updated profile preserving server-generated fields and owner identity
         updated_profile = EventProfile(
             event_id=existing.event_id,  # Immutable
+            user_id=existing.user_id,  # Immutable
             event_type=target_event_type,
             event_name=update_data.get("event_name", existing.event_name),
             city=update_data.get("city", existing.city),
@@ -271,28 +282,38 @@ class EventService:
             updated_at=now,  # Updated timestamp
         )
 
-        await self.store.update(event_id, updated_profile)
+        await self.store.update(event_id, updated_profile, user_id=user_id)
         logger.info("Updated event profile %s", event_id)
         return updated_profile
 
+    async def delete_event_profile(
+        self, event_id: str, user_id: UUID | None = None
+    ) -> bool:
+        """Delete an event profile and its associated data, scoped to user_id."""
+        deleted = await self.store.delete(event_id, user_id=user_id)
+        if deleted:
+            logger.info("Deleted event profile %s", event_id)
+        return deleted
+
     async def list_events(
-        self, skip: int = 0, limit: int = 50
+        self, skip: int = 0, limit: int = 50, user_id: UUID | None = None
     ) -> tuple[list[EventProfile], int]:
-        """Return a paginated list of active event profiles and total count."""
-        return await self.store.list(skip=skip, limit=limit)
+        """Return a paginated list of active event profiles and total count for user."""
+        return await self.store.list(skip=skip, limit=limit, user_id=user_id)
 
     async def get_event_budget_plan(
-        self, event_id: str
+        self, event_id: str, user_id: UUID | None = None
     ) -> EventBudgetPlanResponse | None:
         """Retrieve the deterministic budget plan for a saved event profile.
 
         Args:
             event_id: Unique event identifier.
+            user_id: Optional authenticated user UUID or guest session identifier.
 
         Returns:
             EventBudgetPlanResponse if event exists, None otherwise.
         """
-        profile = await self.store.get(event_id)
+        profile = await self.store.get(event_id, user_id=user_id)
         if profile is None:
             return None
 
@@ -348,6 +369,7 @@ class EventService:
         event_id: str,
         new_total_budget_inr: int,
         strict_protect: bool = False,
+        user_id: UUID | None = None,
     ) -> BudgetRebalanceResponse | None:
         """Rebalance an existing event profile's budget using priority-based category trimming.
 
@@ -355,11 +377,12 @@ class EventService:
             event_id: Unique event identifier.
             new_total_budget_inr: Target new budget in INR.
             strict_protect: If True, disallow cuts to catering and buffer reserve.
+            user_id: Optional authenticated user UUID or guest session identifier.
 
         Returns:
             BudgetRebalanceResponse if event exists, None otherwise.
         """
-        profile = await self.store.get(event_id)
+        profile = await self.store.get(event_id, user_id=user_id)
         if profile is None:
             return None
 
@@ -373,6 +396,7 @@ class EventService:
         now = datetime.now(timezone.utc)
         updated_profile = EventProfile(
             event_id=profile.event_id,
+            user_id=profile.user_id,
             event_type=profile.event_type,
             event_name=profile.event_name,
             city=profile.city,
@@ -389,7 +413,7 @@ class EventService:
             created_at=profile.created_at,
             updated_at=now,
         )
-        await self.store.update(event_id, updated_profile)
+        await self.store.update(event_id, updated_profile, user_id=user_id)
         logger.info(
             "Rebalanced event profile %s budget to INR %d",
             event_id,
@@ -401,17 +425,19 @@ class EventService:
         self,
         event_id: str,
         reference_date: date | None = None,
+        user_id: UUID | None = None,
     ) -> EventTimelineScheduleResponse | None:
         """Generate and retrieve the deterministic timeline for a saved event profile.
 
         Args:
             event_id: Unique event identifier.
             reference_date: Optional simulated 'today' for testing.
+            user_id: Optional authenticated user UUID or guest session identifier.
 
         Returns:
             EventTimelineScheduleResponse if event exists, None otherwise.
         """
-        profile = await self.store.get(event_id)
+        profile = await self.store.get(event_id, user_id=user_id)
         if profile is None:
             return None
 
@@ -429,6 +455,7 @@ class EventService:
         milestone_id: str,
         status: MilestoneStatus,
         reference_date: date | None = None,
+        user_id: UUID | None = None,
     ) -> EventMilestone | None:
         """Update completion status of a timeline milestone in ephemeral storage.
 
@@ -437,6 +464,7 @@ class EventService:
             milestone_id: Milestone identifier (must belong to event type template).
             status: New status (pending or completed).
             reference_date: Optional simulated reference date for testing.
+            user_id: Optional authenticated user UUID or guest session identifier.
 
         Returns:
             Updated EventMilestone, or None if event not found.
@@ -445,7 +473,7 @@ class EventService:
             ValueError: If event_date is missing on profile.
             KeyError: If milestone_id does not exist in template for event type.
         """
-        profile = await self.store.get(event_id)
+        profile = await self.store.get(event_id, user_id=user_id)
         if profile is None:
             return None
 
@@ -472,6 +500,7 @@ class EventService:
         now = datetime.now(timezone.utc)
         updated_profile = EventProfile(
             event_id=profile.event_id,
+            user_id=profile.user_id,
             event_type=profile.event_type,
             event_name=profile.event_name,
             city=profile.city,
@@ -488,7 +517,7 @@ class EventService:
             created_at=profile.created_at,
             updated_at=now,
         )
-        await self.store.update(event_id, updated_profile)
+        await self.store.update(event_id, updated_profile, user_id=user_id)
 
         # Build and return the updated milestone object
         ref_date = reference_date or get_current_ist_date()
@@ -517,16 +546,18 @@ class EventService:
     async def get_event_vendor_checklist(
         self,
         event_id: str,
+        user_id: UUID | None = None,
     ) -> EventVendorChecklistResponse | None:
         """Retrieve or lazily initialize the vendor checklist for a saved event.
 
         Args:
             event_id: Unique event identifier.
+            user_id: Optional authenticated user UUID or guest session identifier.
 
         Returns:
             EventVendorChecklistResponse if event exists, None otherwise.
         """
-        profile = await self.store.get(event_id)
+        profile = await self.store.get(event_id, user_id=user_id)
         if profile is None:
             return None
 
@@ -540,6 +571,7 @@ class EventService:
             now = datetime.now(timezone.utc)
             updated_profile = EventProfile(
                 event_id=profile.event_id,
+                user_id=profile.user_id,
                 event_type=profile.event_type,
                 event_name=profile.event_name,
                 city=profile.city,
@@ -556,7 +588,7 @@ class EventService:
                 created_at=profile.created_at,
                 updated_at=now,
             )
-            await self.store.update(event_id, updated_profile)
+            await self.store.update(event_id, updated_profile, user_id=user_id)
             profile = updated_profile
 
         summary = calculate_vendor_checklist_summary(profile.vendor_checklist)
@@ -583,6 +615,7 @@ class EventService:
         event_id: str,
         item_id: str,
         request: VendorChecklistItemUpdateRequest,
+        user_id: UUID | None = None,
     ) -> EventVendorChecklistItem | None:
         """Apply updates to a specific vendor checklist item in ephemeral storage.
 
@@ -590,6 +623,7 @@ class EventService:
             event_id: Unique event identifier.
             item_id: Checklist item identifier.
             request: Validated fields to update.
+            user_id: Optional authenticated user UUID or guest session identifier.
 
         Returns:
             Updated EventVendorChecklistItem, or None if event not found.
@@ -597,7 +631,7 @@ class EventService:
         Raises:
             KeyError: If item_id does not exist in the event's checklist.
         """
-        profile = await self.store.get(event_id)
+        profile = await self.store.get(event_id, user_id=user_id)
         if profile is None:
             return None
 
@@ -610,6 +644,7 @@ class EventService:
             )
             profile = EventProfile(
                 event_id=profile.event_id,
+                user_id=profile.user_id,
                 event_type=profile.event_type,
                 event_name=profile.event_name,
                 city=profile.city,
@@ -626,7 +661,7 @@ class EventService:
                 created_at=profile.created_at,
                 updated_at=datetime.now(timezone.utc),
             )
-            await self.store.update(event_id, profile)
+            await self.store.update(event_id, profile, user_id=user_id)
 
         matching_item = next(
             (item for item in profile.vendor_checklist if item.id == item_id),
@@ -672,6 +707,7 @@ class EventService:
 
         updated_profile = EventProfile(
             event_id=profile.event_id,
+            user_id=profile.user_id,
             event_type=profile.event_type,
             event_name=profile.event_name,
             city=profile.city,
@@ -688,7 +724,7 @@ class EventService:
             created_at=profile.created_at,
             updated_at=now,
         )
-        await self.store.update(event_id, updated_profile)
+        await self.store.update(event_id, updated_profile, user_id=user_id)
 
         # Privacy-safe logging: Never log user-entered notes or vendor contact names
         logger.info(
@@ -707,6 +743,7 @@ class EventService:
         orchestrator: Any,
         category: IdeaCategory | None = None,
         limit: int = 10,
+        user_id: UUID | None = None,
     ) -> AIResultEnvelope[EventIdeasResponse] | None:
         """Generate personalized event recommendations via AI orchestration with deterministic fallback.
 
@@ -715,11 +752,12 @@ class EventService:
             orchestrator: Application AI orchestrator handling mode and fallbacks.
             category: Optional category filter.
             limit: Maximum count of recommendations to return.
+            user_id: Optional authenticated user UUID or guest session identifier.
 
         Returns:
             AIResultEnvelope containing EventIdeasResponse, or None if event not found.
         """
-        profile = await self.get_event(event_id)
+        profile = await self.get_event(event_id, user_id=user_id)
         if profile is None:
             return None
 
@@ -762,6 +800,7 @@ class EventService:
         event_id: str,
         orchestrator: Any | None = None,
         reference_date: date | None = None,
+        user_id: UUID | None = None,
     ) -> AIResultEnvelope[EventRisksResponse] | None:
         """Analyze pre-mortem risks for a saved event using deterministic rules.
 
@@ -769,11 +808,12 @@ class EventService:
             event_id: Target event profile identifier.
             orchestrator: Optional AI orchestrator for demo fixtures or Gemini enrichment.
             reference_date: Optional simulated reference date.
+            user_id: Optional authenticated user UUID or guest session identifier.
 
         Returns:
             AIResultEnvelope containing EventRisksResponse, or None if event not found.
         """
-        profile = await self.get_event(event_id)
+        profile = await self.get_event(event_id, user_id=user_id)
         if profile is None:
             return None
 
@@ -851,6 +891,7 @@ class EventService:
         event_id: str,
         orchestrator: AIOrchestrator | None = None,
         reference_date: date | None = None,
+        user_id: UUID | None = None,
     ) -> AIResultEnvelope[EventFamilyCouncilResponse] | None:
         """Review an event plan across four distinct family council perspectives with trade-offs.
 
@@ -858,11 +899,12 @@ class EventService:
             event_id: Target event profile identifier.
             orchestrator: Optional AI orchestrator for demo fixtures or Gemini enrichment.
             reference_date: Optional simulated reference date.
+            user_id: Optional authenticated user UUID or guest session identifier.
 
         Returns:
             AIResultEnvelope containing EventFamilyCouncilResponse, or None if event not found.
         """
-        profile = await self.get_event(event_id)
+        profile = await self.get_event(event_id, user_id=user_id)
         if profile is None:
             return None
 
@@ -945,6 +987,7 @@ class EventService:
         request: CrisisEvaluationRequest,
         dataset_repo: DatasetRepository,
         orchestrator: AIOrchestrator | None = None,
+        user_id: UUID | None = None,
     ) -> AIResultEnvelope[EventCrisisRecoveryResponse] | None:
         """Evaluate an event crisis and produce a recovery plan without mutating event resources.
 
@@ -953,11 +996,12 @@ class EventService:
             request: Crisis evaluation parameters (type, severity, description, area, phase).
             dataset_repo: In-memory dataset repository for scenario matching.
             orchestrator: Optional AI orchestrator for demo fixtures or Gemini enrichment.
+            user_id: Optional authenticated user UUID or guest session identifier.
 
         Returns:
             AIResultEnvelope containing EventCrisisRecoveryResponse, or None if event not found.
         """
-        profile = await self.get_event(event_id)
+        profile = await self.get_event(event_id, user_id=user_id)
         if profile is None:
             return None
 
@@ -972,17 +1016,19 @@ class EventService:
         self,
         event_id: str,
         request: RecoveryRecordCreateRequest,
+        user_id: UUID | None = None,
     ) -> CrisisRecoveryRecord | None:
         """Save a validated recovery record from a generated plan and track selected actions.
 
         Args:
             event_id: Owning event profile identifier.
             request: Validated recovery creation payload with recovery_plan and optional actions.
+            user_id: Optional authenticated user UUID or guest session identifier.
 
         Returns:
             Saved CrisisRecoveryRecord, or None if the owning event profile is not found.
         """
-        profile = await self.get_event(event_id)
+        profile = await self.get_event(event_id, user_id=user_id)
         if profile is None:
             return None
 
@@ -1076,7 +1122,7 @@ class EventService:
                 "updated_at": now,
             }
         )
-        await self.store.update(event_id, updated_profile)
+        await self.store.update(event_id, updated_profile, user_id=user_id)
 
         logger.info(
             "Saved recovery record %s for event %s (actions=%d, source=%s)",
@@ -1092,9 +1138,10 @@ class EventService:
         event_id: str,
         skip: int = 0,
         limit: int = 50,
+        user_id: UUID | None = None,
     ) -> list[CrisisRecoveryRecord] | None:
         """List historical recovery records for an event, sorted newest first."""
-        profile = await self.get_event(event_id)
+        profile = await self.get_event(event_id, user_id=user_id)
         if profile is None:
             return None
 
@@ -1110,9 +1157,10 @@ class EventService:
         self,
         event_id: str,
         recovery_id: str,
+        user_id: UUID | None = None,
     ) -> CrisisRecoveryRecord | None:
         """Retrieve a specific recovery record belonging to the owning event."""
-        profile = await self.get_event(event_id)
+        profile = await self.get_event(event_id, user_id=user_id)
         if profile is None:
             return None
 
@@ -1126,9 +1174,10 @@ class EventService:
         event_id: str,
         recovery_id: str,
         request: RecoveryRecordUpdateRequest,
+        user_id: UUID | None = None,
     ) -> CrisisRecoveryRecord | None:
         """Update supported recovery record fields (such as status and description)."""
-        profile = await self.get_event(event_id)
+        profile = await self.get_event(event_id, user_id=user_id)
         if profile is None:
             return None
 
@@ -1168,7 +1217,7 @@ class EventService:
                 "updated_at": now,
             }
         )
-        await self.store.update(event_id, updated_profile)
+        await self.store.update(event_id, updated_profile, user_id=user_id)
 
         logger.info(
             "Updated recovery record %s for event %s (status=%s)",
@@ -1184,9 +1233,10 @@ class EventService:
         recovery_id: str,
         action_id: str,
         request: TrackedActionUpdateRequest,
+        user_id: UUID | None = None,
     ) -> TrackedRecoveryAction | None:
         """Update an action item's status and notes, recalculating parent progress counts."""
-        profile = await self.get_event(event_id)
+        profile = await self.get_event(event_id, user_id=user_id)
         if profile is None:
             return None
 
@@ -1248,7 +1298,7 @@ class EventService:
                 "updated_at": now,
             }
         )
-        await self.store.update(event_id, updated_profile)
+        await self.store.update(event_id, updated_profile, user_id=user_id)
 
         logger.info(
             "Updated action %s in recovery %s for event %s (action_status=%s, recovery_status=%s)",
@@ -1264,17 +1314,19 @@ class EventService:
         self,
         event_id: str,
         reference_date: date | None = None,
+        user_id: UUID | None = None,
     ) -> EventReadinessResponse | None:
         """Assess event planning readiness deterministically across all domains.
 
         Args:
             event_id: Target event profile identifier.
             reference_date: Optional simulated reference date for timeline calculations.
+            user_id: Optional authenticated user UUID or guest session identifier.
 
         Returns:
             EventReadinessResponse if event profile exists, None otherwise.
         """
-        profile = await self.get_event(event_id)
+        profile = await self.get_event(event_id, user_id=user_id)
         if profile is None:
             return None
 

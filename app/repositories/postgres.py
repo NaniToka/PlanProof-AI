@@ -3,15 +3,16 @@ PostgreSQL Event Storage Repository.
 
 Production-grade persistent repository implementing BaseEventRepository using asyncpg.
 Handles connection pooling, parameterized queries, relational entity mapping,
-multi-table transactional integrity, and predictable constraint error handling.
+multi-table transactional integrity, Supabase transaction-local RLS claims,
+and tenant data isolation without fixed guest accounts.
 """
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
-from datetime import date, datetime, timezone
 import json
 import logging
+from contextlib import asynccontextmanager
+from datetime import date, datetime, timezone
 from typing import Any, AsyncIterator
 from uuid import UUID
 
@@ -46,12 +47,9 @@ from app.schemas import (
 
 logger = logging.getLogger(__name__)
 
-# Default placeholder UUID for unauthenticated guest sessions in Step 1C
-GUEST_USER_ID = UUID("00000000-0000-0000-0000-000000000000")
-
 
 class PostgresEventRepository(BaseEventRepository):
-    """PostgreSQL implementation of BaseEventRepository using asyncpg."""
+    """PostgreSQL implementation of BaseEventRepository using asyncpg and Supabase RLS."""
 
     def __init__(
         self,
@@ -59,7 +57,7 @@ class PostgresEventRepository(BaseEventRepository):
         min_size: int = 1,
         max_size: int = 10,
         timeout: float = 10.0,
-        default_user_id: UUID = GUEST_USER_ID,
+        default_user_id: UUID | None = None,
         pool: asyncpg.Pool | None = None,
         settings: Settings | None = None,
     ) -> None:
@@ -70,7 +68,7 @@ class PostgresEventRepository(BaseEventRepository):
             min_size: Minimum connection pool connections.
             max_size: Maximum connection pool connections.
             timeout: Timeout in seconds for connection acquisition.
-            default_user_id: User UUID assigned to records when running in unauthenticated mode.
+            default_user_id: Deprecated optional user UUID (Step 2 requires verified user_id).
             pool: Optional pre-configured asyncpg.Pool instance (useful for testing/injection).
             settings: Optional Settings instance.
         """
@@ -148,40 +146,34 @@ class PostgresEventRepository(BaseEventRepository):
         async with self._acquire() as conn:
             yield conn
 
-    async def _ensure_guest_profile(self, conn: asyncpg.Connection, user_id: UUID) -> None:
-        """Ensure auth.users and public.profiles have a valid owner row for foreign key constraints."""
-        has_auth = await conn.fetchval("SELECT to_regclass('auth.users');")
-        if has_auth:
-            await conn.execute(
-                """
-                INSERT INTO auth.users (id, email)
-                VALUES ($1, 'guest@planproof.ai')
-                ON CONFLICT (id) DO NOTHING;
-                """,
-                user_id,
-            )
+    # --------------------------------------------------------------------------
+    # RLS Claim Context Management (Transaction-Local)
+    # --------------------------------------------------------------------------
 
-        has_profiles = await conn.fetchval("SELECT to_regclass('public.profiles');")
-        if has_profiles:
-            await conn.execute(
-                """
-                INSERT INTO public.profiles (id, email, full_name)
-                VALUES ($1, 'guest@planproof.ai', 'Guest User')
-                ON CONFLICT (id) DO NOTHING;
-                """,
-                user_id,
-            )
+    @staticmethod
+    async def _set_rls_context(conn: asyncpg.Connection, user_id: UUID) -> None:
+        """Establish transaction-scoped Supabase claim context for Row Level Security.
+
+        Uses SET LOCAL / set_config with is_local=true so that claims revert
+        automatically upon COMMIT or ROLLBACK, preventing pool leakage.
+        """
+        await conn.execute("SELECT set_config('role', 'authenticated', true);")
+        await conn.execute("SELECT set_config('request.jwt.claim.sub', $1, true);", str(user_id))
 
     # --------------------------------------------------------------------------
     # Core Event Profile Aggregate Operations
     # --------------------------------------------------------------------------
 
-    async def create(self, profile: EventProfile) -> EventProfile:
+    async def create(self, profile: EventProfile, user_id: UUID | None = None) -> EventProfile:
         """Insert a complete event profile across all related child tables in a transaction."""
+        owner_id = user_id or profile.user_id or self._default_user_id
+        if owner_id is None:
+            raise RepositoryIntegrityError("Cannot persist event without an authenticated user ID.")
+
         async with self._acquire() as conn:
             try:
                 async with conn.transaction():
-                    await self._ensure_guest_profile(conn, self._default_user_id)
+                    await self._set_rls_context(conn, owner_id)
 
                     # 1. Insert parent event
                     await conn.execute(
@@ -193,7 +185,7 @@ class PostgresEventRepository(BaseEventRepository):
                         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14);
                         """,
                         profile.event_id,
-                        self._default_user_id,
+                        owner_id,
                         profile.event_type.value,
                         profile.event_name,
                         profile.city,
@@ -317,6 +309,9 @@ class PostgresEventRepository(BaseEventRepository):
                                 act.created_at,
                                 act.updated_at,
                             )
+
+                if profile.user_id != owner_id:
+                    profile = profile.model_copy(update={"user_id": owner_id})
                 return profile
             except asyncpg.IntegrityConstraintViolationError as err:
                 raise RepositoryIntegrityError(f"Database constraint violation on create: {err}") from err
@@ -325,185 +320,207 @@ class PostgresEventRepository(BaseEventRepository):
                     raise
                 raise RepositoryError(f"Failed to create event: {exc}") from exc
 
-    async def get(self, event_id: str) -> EventProfile | None:
-        """Retrieve complete event profile with all child entities."""
+    async def _fetch_profile_in_conn(
+        self, conn: asyncpg.Connection, event_id: str, user_id: UUID
+    ) -> EventProfile | None:
+        """Internal helper to fetch full event aggregate within an existing transaction/connection."""
+        # 1. Fetch parent event
+        row = await conn.fetchrow(
+            """
+            SELECT event_id, user_id, event_type, event_name, city, city_tier,
+                   event_date, guest_count, total_budget_inr, language,
+                   theme_notes, is_in_progress, created_at, updated_at
+            FROM public.events
+            WHERE event_id = $1 AND user_id = $2;
+            """,
+            event_id,
+            user_id,
+        )
+        if not row:
+            return None
+
+        # 2. Fetch budget
+        b_row = await conn.fetchrow(
+            """
+            SELECT venue, catering, decor, photo_video, attire_beauty,
+                   entertainment, logistics, buffer, total_budget_inr
+            FROM public.event_budgets
+            WHERE event_id = $1;
+            """,
+            event_id,
+        )
+        budget = (
+            EventBudgetBreakdown(
+                venue=b_row["venue"],
+                catering=b_row["catering"],
+                decor=b_row["decor"],
+                photo_video=b_row["photo_video"],
+                attire_beauty=b_row["attire_beauty"],
+                entertainment=b_row["entertainment"],
+                logistics=b_row["logistics"],
+                buffer=b_row["buffer"],
+                total_budget_inr=b_row["total_budget_inr"],
+            )
+            if b_row
+            else None
+        )
+
+        # 3. Fetch milestone statuses
+        ms_rows = await conn.fetch(
+            """
+            SELECT milestone_id, status
+            FROM public.event_milestone_statuses
+            WHERE event_id = $1;
+            """,
+            event_id,
+        )
+        milestone_statuses = {r["milestone_id"]: MilestoneStatus(r["status"]) for r in ms_rows}
+
+        # 4. Fetch vendor checklist items
+        v_rows = await conn.fetch(
+            """
+            SELECT id, category, title, description, status,
+                   due_date, days_before_event, priority, notes,
+                   vendor_name, booking_status, created_at, updated_at
+            FROM public.event_vendor_checklist_items
+            WHERE event_id = $1
+            ORDER BY due_date ASC NULLS LAST, created_at ASC;
+            """,
+            event_id,
+        )
+        vendor_checklist = [
+            EventVendorChecklistItem(
+                id=r["id"],
+                category=VendorChecklistCategory(r["category"]),
+                title=r["title"],
+                description=r["description"],
+                status=VendorChecklistStatus(r["status"]),
+                due_date=r["due_date"],
+                days_before_event=r["days_before_event"],
+                priority=VendorChecklistPriority(r["priority"]),
+                notes=r["notes"],
+                vendor_name=r["vendor_name"],
+                booking_status=VendorBookingStatus(r["booking_status"]),
+                created_at=r["created_at"],
+                updated_at=r["updated_at"],
+            )
+            for r in v_rows
+        ]
+
+        # 5. Fetch recovery records and actions
+        rec_rows = await conn.fetch(
+            """
+            SELECT recovery_id, crisis_type, severity, description,
+                   recovery_plan, source, status, total_actions, completed_actions,
+                   created_at, updated_at
+            FROM public.crisis_recovery_records
+            WHERE event_id = $1
+            ORDER BY created_at DESC;
+            """,
+            event_id,
+        )
+        recovery_records: list[CrisisRecoveryRecord] = []
+        for rr in rec_rows:
+            rec_id = rr["recovery_id"]
+            act_rows = await conn.fetch(
+                """
+                SELECT action_id, title, description, priority, status, notes,
+                       created_at, updated_at
+                FROM public.crisis_recovery_actions
+                WHERE recovery_id = $1
+                ORDER BY created_at ASC;
+                """,
+                rec_id,
+            )
+            actions = [
+                TrackedRecoveryAction(
+                    action_id=ar["action_id"],
+                    recovery_id=rec_id,
+                    title=ar["title"],
+                    description=ar["description"],
+                    priority=ar["priority"],
+                    status=RecoveryActionStatus(ar["status"]),
+                    notes=ar["notes"],
+                    created_at=ar["created_at"],
+                    updated_at=ar["updated_at"],
+                )
+                for ar in act_rows
+            ]
+            plan_data = rr["recovery_plan"]
+            if isinstance(plan_data, str):
+                plan_dict = json.loads(plan_data)
+            else:
+                plan_dict = plan_data
+            plan = EventCrisisRecoveryResponse.model_validate(plan_dict)
+
+            recovery_records.append(
+                CrisisRecoveryRecord(
+                    recovery_id=rec_id,
+                    event_id=event_id,
+                    crisis_type=rr["crisis_type"],
+                    severity=rr["severity"],
+                    description=rr["description"],
+                    recovery_plan=plan,
+                    actions=actions,
+                    source=rr["source"],
+                    status=RecoveryStatus(rr["status"]),
+                    total_actions=rr["total_actions"],
+                    completed_actions=rr["completed_actions"],
+                    created_at=rr["created_at"],
+                    updated_at=rr["updated_at"],
+                )
+            )
+
+        return EventProfile(
+            event_id=row["event_id"],
+            user_id=row["user_id"],
+            event_type=EventType(row["event_type"]),
+            event_name=row["event_name"],
+            city=row["city"],
+            city_tier=CityTier(row["city_tier"]),
+            event_date=row["event_date"],
+            guest_count=row["guest_count"],
+            total_budget_inr=row["total_budget_inr"],
+            language=LanguageCode(row["language"]),
+            theme_notes=row["theme_notes"],
+            is_in_progress=row["is_in_progress"],
+            budget=budget,
+            milestone_statuses=milestone_statuses,
+            vendor_checklist=vendor_checklist,
+            recovery_records=recovery_records,
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+    async def get(self, event_id: str, user_id: UUID | None = None) -> EventProfile | None:
+        """Retrieve complete event profile with all child entities, scoped to user_id."""
+        effective_user_id = user_id or self._default_user_id
+        if effective_user_id is None:
+            return None
+
         async with self._acquire() as conn:
             try:
-                # 1. Fetch parent event
-                row = await conn.fetchrow(
-                    """
-                    SELECT event_id, event_type, event_name, city, city_tier,
-                           event_date, guest_count, total_budget_inr, language,
-                           theme_notes, is_in_progress, created_at, updated_at
-                    FROM public.events
-                    WHERE event_id = $1;
-                    """,
-                    event_id,
-                )
-                if not row:
-                    return None
-
-                # 2. Fetch budget
-                b_row = await conn.fetchrow(
-                    """
-                    SELECT venue, catering, decor, photo_video, attire_beauty,
-                           entertainment, logistics, buffer, total_budget_inr
-                    FROM public.event_budgets
-                    WHERE event_id = $1;
-                    """,
-                    event_id,
-                )
-                budget = (
-                    EventBudgetBreakdown(
-                        venue=b_row["venue"],
-                        catering=b_row["catering"],
-                        decor=b_row["decor"],
-                        photo_video=b_row["photo_video"],
-                        attire_beauty=b_row["attire_beauty"],
-                        entertainment=b_row["entertainment"],
-                        logistics=b_row["logistics"],
-                        buffer=b_row["buffer"],
-                        total_budget_inr=b_row["total_budget_inr"],
-                    )
-                    if b_row
-                    else None
-                )
-
-                # 3. Fetch milestone statuses
-                ms_rows = await conn.fetch(
-                    """
-                    SELECT milestone_id, status
-                    FROM public.event_milestone_statuses
-                    WHERE event_id = $1;
-                    """,
-                    event_id,
-                )
-                milestone_statuses = {r["milestone_id"]: MilestoneStatus(r["status"]) for r in ms_rows}
-
-                # 4. Fetch vendor checklist items
-                v_rows = await conn.fetch(
-                    """
-                    SELECT id, category, title, description, status,
-                           due_date, days_before_event, priority, notes,
-                           vendor_name, booking_status, created_at, updated_at
-                    FROM public.event_vendor_checklist_items
-                    WHERE event_id = $1
-                    ORDER BY due_date ASC NULLS LAST, created_at ASC;
-                    """,
-                    event_id,
-                )
-                vendor_checklist = [
-                    EventVendorChecklistItem(
-                        id=r["id"],
-                        category=VendorChecklistCategory(r["category"]),
-                        title=r["title"],
-                        description=r["description"],
-                        status=VendorChecklistStatus(r["status"]),
-                        due_date=r["due_date"],
-                        days_before_event=r["days_before_event"],
-                        priority=VendorChecklistPriority(r["priority"]),
-                        notes=r["notes"],
-                        vendor_name=r["vendor_name"],
-                        booking_status=VendorBookingStatus(r["booking_status"]),
-                        created_at=r["created_at"],
-                        updated_at=r["updated_at"],
-                    )
-                    for r in v_rows
-                ]
-
-                # 5. Fetch recovery records and actions
-                rec_rows = await conn.fetch(
-                    """
-                    SELECT recovery_id, crisis_type, severity, description,
-                           recovery_plan, source, status, total_actions, completed_actions,
-                           created_at, updated_at
-                    FROM public.crisis_recovery_records
-                    WHERE event_id = $1
-                    ORDER BY created_at DESC;
-                    """,
-                    event_id,
-                )
-                recovery_records: list[CrisisRecoveryRecord] = []
-                for rr in rec_rows:
-                    rec_id = rr["recovery_id"]
-                    act_rows = await conn.fetch(
-                        """
-                        SELECT action_id, title, description, priority, status, notes,
-                               created_at, updated_at
-                        FROM public.crisis_recovery_actions
-                        WHERE recovery_id = $1
-                        ORDER BY created_at ASC;
-                        """,
-                        rec_id,
-                    )
-                    actions = [
-                        TrackedRecoveryAction(
-                            action_id=ar["action_id"],
-                            recovery_id=rec_id,
-                            title=ar["title"],
-                            description=ar["description"],
-                            priority=ar["priority"],
-                            status=RecoveryActionStatus(ar["status"]),
-                            notes=ar["notes"],
-                            created_at=ar["created_at"],
-                            updated_at=ar["updated_at"],
-                        )
-                        for ar in act_rows
-                    ]
-                    plan_data = rr["recovery_plan"]
-                    if isinstance(plan_data, str):
-                        plan_dict = json.loads(plan_data)
-                    else:
-                        plan_dict = plan_data
-                    plan = EventCrisisRecoveryResponse.model_validate(plan_dict)
-
-                    recovery_records.append(
-                        CrisisRecoveryRecord(
-                            recovery_id=rec_id,
-                            event_id=event_id,
-                            crisis_type=rr["crisis_type"],
-                            severity=rr["severity"],
-                            description=rr["description"],
-                            recovery_plan=plan,
-                            actions=actions,
-                            source=rr["source"],
-                            status=RecoveryStatus(rr["status"]),
-                            total_actions=rr["total_actions"],
-                            completed_actions=rr["completed_actions"],
-                            created_at=rr["created_at"],
-                            updated_at=rr["updated_at"],
-                        )
-                    )
-
-                return EventProfile(
-                    event_id=row["event_id"],
-                    event_type=EventType(row["event_type"]),
-                    event_name=row["event_name"],
-                    city=row["city"],
-                    city_tier=CityTier(row["city_tier"]),
-                    event_date=row["event_date"],
-                    guest_count=row["guest_count"],
-                    total_budget_inr=row["total_budget_inr"],
-                    language=LanguageCode(row["language"]),
-                    theme_notes=row["theme_notes"],
-                    is_in_progress=row["is_in_progress"],
-                    budget=budget,
-                    milestone_statuses=milestone_statuses,
-                    vendor_checklist=vendor_checklist,
-                    recovery_records=recovery_records,
-                    created_at=row["created_at"],
-                    updated_at=row["updated_at"],
-                )
+                async with conn.transaction():
+                    await self._set_rls_context(conn, effective_user_id)
+                    return await self._fetch_profile_in_conn(conn, event_id, effective_user_id)
             except Exception as exc:
                 if isinstance(exc, (RepositoryError,)):
                     raise
                 raise RepositoryError(f"Failed to fetch event '{event_id}': {exc}") from exc
 
-    async def update(self, event_id: str, profile: EventProfile) -> EventProfile | None:
+    async def update(
+        self, event_id: str, profile: EventProfile, user_id: UUID | None = None
+    ) -> EventProfile | None:
         """Update event profile and synchronize dependent child entities in a transaction."""
+        owner_id = user_id or profile.user_id or self._default_user_id
+        if owner_id is None:
+            return None
+
         async with self._acquire() as conn:
             try:
                 async with conn.transaction():
+                    await self._set_rls_context(conn, owner_id)
+
                     # 1. Update parent event row
                     res = await conn.execute(
                         """
@@ -519,7 +536,7 @@ class PostgresEventRepository(BaseEventRepository):
                             theme_notes = $10,
                             is_in_progress = $11,
                             updated_at = $12
-                        WHERE event_id = $1;
+                        WHERE event_id = $1 AND user_id = $13;
                         """,
                         event_id,
                         profile.event_type.value,
@@ -533,6 +550,7 @@ class PostgresEventRepository(BaseEventRepository):
                         profile.theme_notes,
                         profile.is_in_progress,
                         profile.updated_at,
+                        owner_id,
                     )
                     if res == "UPDATE 0":
                         return None
@@ -681,6 +699,8 @@ class PostgresEventRepository(BaseEventRepository):
                                 act.created_at,
                                 act.updated_at,
                             )
+                if profile.user_id != owner_id:
+                    profile = profile.model_copy(update={"user_id": owner_id})
                 return profile
             except asyncpg.IntegrityConstraintViolationError as err:
                 raise RepositoryIntegrityError(f"Database constraint violation on update: {err}") from err
@@ -689,49 +709,77 @@ class PostgresEventRepository(BaseEventRepository):
                     raise
                 raise RepositoryError(f"Failed to update event '{event_id}': {exc}") from exc
 
-    async def list(self, skip: int = 0, limit: int = 50) -> tuple[list[EventProfile], int]:
-        """Return a paginated slice of stored events, ordered newest first."""
+    async def list(
+        self, skip: int = 0, limit: int = 50, user_id: UUID | None = None
+    ) -> tuple[list[EventProfile], int]:
+        """Return a paginated slice of stored events belonging to user_id, ordered newest first."""
+        effective_user_id = user_id or self._default_user_id
+        if effective_user_id is None:
+            return [], 0
+
         async with self._acquire() as conn:
             try:
-                total: int = await conn.fetchval("SELECT COUNT(*) FROM public.events;")
-                rows = await conn.fetch(
-                    """
-                    SELECT event_id
-                    FROM public.events
-                    ORDER BY updated_at DESC
-                    OFFSET $1 LIMIT $2;
-                    """,
-                    skip,
-                    limit,
-                )
-                profiles: list[EventProfile] = []
-                for r in rows:
-                    p = await self.get(r["event_id"])
-                    if p:
-                        profiles.append(p)
-                return profiles, total
+                async with conn.transaction():
+                    await self._set_rls_context(conn, effective_user_id)
+                    total: int = await conn.fetchval(
+                        "SELECT COUNT(*) FROM public.events WHERE user_id = $1;", effective_user_id
+                    )
+                    rows = await conn.fetch(
+                        """
+                        SELECT event_id
+                        FROM public.events
+                        WHERE user_id = $1
+                        ORDER BY updated_at DESC
+                        OFFSET $2 LIMIT $3;
+                        """,
+                        effective_user_id,
+                        skip,
+                        limit,
+                    )
+                    profiles: list[EventProfile] = []
+                    for r in rows:
+                        p = await self._fetch_profile_in_conn(conn, r["event_id"], effective_user_id)
+                        if p:
+                            profiles.append(p)
+                    return profiles, total
             except Exception as exc:
                 if isinstance(exc, (RepositoryError,)):
                     raise
                 raise RepositoryError(f"Failed to list events: {exc}") from exc
 
-    async def delete(self, event_id: str) -> bool:
+    async def delete(self, event_id: str, user_id: UUID | None = None) -> bool:
         """Delete an event profile from PostgreSQL (cascading deletes child rows)."""
+        effective_user_id = user_id or self._default_user_id
+        if effective_user_id is None:
+            return False
+
         async with self._acquire() as conn:
             try:
-                res = await conn.execute(
-                    "DELETE FROM public.events WHERE event_id = $1;", event_id
-                )
-                return res == "DELETE 1"
+                async with conn.transaction():
+                    await self._set_rls_context(conn, effective_user_id)
+                    res = await conn.execute(
+                        "DELETE FROM public.events WHERE event_id = $1 AND user_id = $2;",
+                        event_id,
+                        effective_user_id,
+                    )
+                    return res == "DELETE 1"
             except Exception as exc:
                 raise RepositoryError(f"Failed to delete event '{event_id}': {exc}") from exc
 
-    async def count(self) -> int:
-        """Return the current number of events stored."""
+    async def count(self, user_id: UUID | None = None) -> int:
+        """Return the current number of events stored for user_id."""
+        effective_user_id = user_id or self._default_user_id
+        if effective_user_id is None:
+            return 0
+
         async with self._acquire() as conn:
             try:
-                count_val: int = await conn.fetchval("SELECT COUNT(*) FROM public.events;")
-                return count_val
+                async with conn.transaction():
+                    await self._set_rls_context(conn, effective_user_id)
+                    count_val: int = await conn.fetchval(
+                        "SELECT COUNT(*) FROM public.events WHERE user_id = $1;", effective_user_id
+                    )
+                    return count_val
             except Exception as exc:
                 raise RepositoryError(f"Failed to count events: {exc}") from exc
 

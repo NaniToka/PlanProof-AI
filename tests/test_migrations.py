@@ -30,10 +30,10 @@ def test_migration_files_sequential_naming() -> None:
     up_files = sorted([f.name for f in MIGRATIONS_DIR.glob("*.sql")])
     down_files = sorted([f.name for f in DOWN_MIGRATIONS_DIR.glob("*.sql")])
 
-    assert len(up_files) == 8, f"Expected 8 migration files, found {len(up_files)}: {up_files}"
-    assert len(down_files) == 8, f"Expected 8 down migration files, found {len(down_files)}: {down_files}"
+    assert len(up_files) >= 8, f"Expected at least 8 migration files, found {len(up_files)}: {up_files}"
+    assert len(down_files) == len(up_files), f"Expected matching down migration files, found {len(down_files)} vs {len(up_files)}"
 
-    expected_prefixes = [f"{i:05d}_" for i in range(1, 9)]
+    expected_prefixes = [f"{i:05d}_" for i in range(1, len(up_files) + 1)]
     for prefix, filename in zip(expected_prefixes, up_files):
         assert filename.startswith(prefix), f"File {filename} does not start with expected prefix {prefix}"
 

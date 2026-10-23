@@ -98,11 +98,13 @@ def make_test_event_profile(
     name: str = "Priya & Rohan Sangeet",
     budget: int = 1500000,
     guest_count: int = 250,
+    user_id: UUID | None = None,
 ) -> EventProfile:
     """Helper to generate a valid, realistic EventProfile model."""
     now = datetime.now(timezone.utc)
     return EventProfile(
         event_id=event_id or f"evt_{uuid4().hex[:12]}",
+        user_id=user_id,
         event_name=name,
         event_type=EventType.WEDDING,
         event_date=date(2026, 12, 15),
@@ -449,22 +451,31 @@ async def test_postgres_parameterized_queries_inspect() -> None:
 
     mock_pool = MagicMock()
     mock_conn = AsyncMock()
+    mock_tx = MagicMock()
+    mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
+    mock_tx.__aexit__ = AsyncMock(return_value=None)
+    mock_conn.transaction = MagicMock(return_value=mock_tx)
+
     mock_pool.acquire.return_value.__aenter__.return_value = mock_conn
     repo._pool = mock_pool
 
     mock_conn.fetchrow.return_value = None
 
-    # Call get
-    await repo.get("evt_test_param")
+    # Call get with user_id
+    user_id = uuid4()
+    await repo.get("evt_test_param", user_id=user_id)
 
     # Inspect the query issued
     assert mock_conn.fetchrow.called
     call_args = mock_conn.fetchrow.call_args[0]
     query_str = call_args[0]
-    param_val = call_args[1]
+    param_val1 = call_args[1]
+    param_val2 = call_args[2]
 
     assert "$1" in query_str
-    assert "evt_test_param" == param_val
+    assert "$2" in query_str
+    assert "evt_test_param" == param_val1
+    assert user_id == param_val2
     # Query must not contain raw formatted id
     assert "evt_test_param" not in query_str
 
@@ -485,17 +496,17 @@ async def test_postgres_transaction_rollback_on_failure() -> None:
     mock_pool.acquire.return_value.__aenter__.return_value = mock_conn
     repo._pool = mock_pool
 
-    # Let the profile checks succeed, then fail on the events table insert
-    mock_conn.fetchval.return_value = "auth.users"
+    # Role and claim set succeed, then fail on the events table insert
+    user_id = uuid4()
     mock_conn.execute.side_effect = [
-        "INSERT 0 1",  # auth.users
-        "INSERT 0 1",  # public.profiles
+        "SET",  # role
+        "SET",  # request.jwt.claim.sub
         asyncpg.ForeignKeyViolationError("violates foreign key"),
     ]
 
-    event = make_test_event_profile()
+    event = make_test_event_profile(user_id=user_id)
     with pytest.raises(RepositoryIntegrityError):
-        await repo.create(event)
+        await repo.create(event, user_id=user_id)
 
     # Verify transaction context manager was entered and rolled back
     assert mock_conn.transaction.called
@@ -541,19 +552,23 @@ async def test_live_postgres_full_lifecycle_and_foreign_keys() -> None:
     await repo.connect()
 
     try:
-        # 1. Clean slate
+        # 1. Clean slate & create authenticated owner in auth.users
+        user_id = uuid4()
+        async with repo.acquire_connection() as conn:
+            await conn.execute("INSERT INTO auth.users (id, email) VALUES ($1, $2);", user_id, f"{user_id}@planproof.ai")
+
         await repo.clear()
-        assert await repo.count() == 0
+        assert await repo.count(user_id=user_id) == 0
 
         # 2. Create EventProfile
         event_id = f"evt_live_{uuid4().hex[:8]}"
-        event = make_test_event_profile(event_id=event_id, budget=1800000)
-        created = await repo.create(event)
+        event = make_test_event_profile(event_id=event_id, budget=1800000, user_id=user_id)
+        created = await repo.create(event, user_id=user_id)
         assert created.event_id == event_id
-        assert await repo.count() == 1
+        assert await repo.count(user_id=user_id) == 1
 
         # 3. Retrieve EventProfile
-        fetched = await repo.get(event_id)
+        fetched = await repo.get(event_id, user_id=user_id)
         assert fetched is not None
         assert fetched.event_id == event_id
         assert fetched.total_budget_inr == 1800000
@@ -571,19 +586,19 @@ async def test_live_postgres_full_lifecycle_and_foreign_keys() -> None:
             buffer=30000,
             total_budget_inr=1800000,
         )
-        saved_budget = await repo.save_budget(event_id, budget)
+        saved_budget = await repo.save_budget(event_id, budget, user_id=user_id)
         assert saved_budget == budget
 
-        fetched_budget = await repo.get_budget(event_id)
+        fetched_budget = await repo.get_budget(event_id, user_id=user_id)
         assert fetched_budget is not None
         assert fetched_budget.catering == 700000
         assert fetched_budget.total_budget_inr == 1800000
 
         # 5. Save and Retrieve Milestone Statuses
-        await repo.save_milestone_status(event_id, "MS-01", MilestoneStatus.COMPLETED)
-        await repo.save_milestone_status(event_id, "MS-02", MilestoneStatus.PENDING)
+        await repo.save_milestone_status(event_id, "MS-01", MilestoneStatus.COMPLETED, user_id=user_id)
+        await repo.save_milestone_status(event_id, "MS-02", MilestoneStatus.PENDING, user_id=user_id)
 
-        milestones = await repo.get_milestone_statuses(event_id)
+        milestones = await repo.get_milestone_statuses(event_id, user_id=user_id)
         assert milestones.get("MS-01") == MilestoneStatus.COMPLETED
         assert milestones.get("MS-02") == MilestoneStatus.PENDING
 
@@ -604,9 +619,9 @@ async def test_live_postgres_full_lifecycle_and_foreign_keys() -> None:
             created_at=now,
             updated_at=now,
         )
-        await repo.save_vendor_checklist_item(event_id, v_item)
+        await repo.save_vendor_checklist_item(event_id, v_item, user_id=user_id)
 
-        items = await repo.get_vendor_checklist(event_id)
+        items = await repo.get_vendor_checklist(event_id, user_id=user_id)
         assert len(items) == 1
         assert items[0].id == "VND-001"
         assert items[0].vendor_name == "Shree Ganesh Caterers"
@@ -692,10 +707,10 @@ async def test_live_postgres_full_lifecycle_and_foreign_keys() -> None:
             updated_at=now,
         )
 
-        saved_rec = await repo.create_recovery_record(event_id, recovery_record)
+        saved_rec = await repo.create_recovery_record(event_id, recovery_record, user_id=user_id)
         assert saved_rec.recovery_id == "REC-LIVE-1"
 
-        records = await repo.list_recovery_records(event_id)
+        records = await repo.list_recovery_records(event_id, user_id=user_id)
         assert len(records) == 1
         assert len(records[0].actions) == 2
 
@@ -706,13 +721,14 @@ async def test_live_postgres_full_lifecycle_and_foreign_keys() -> None:
             action_id="ACT-LIVE-1",
             status=RecoveryActionStatus.COMPLETED,
             notes="Contacted backup caterer Mr. Verma; confirmed availability",
+            user_id=user_id,
         )
         assert upd_action is not None
         assert upd_action.status == RecoveryActionStatus.COMPLETED
         assert upd_action.notes == "Contacted backup caterer Mr. Verma; confirmed availability"
 
         # 9. Verify full EventProfile retrieval reflects all nested entities
-        full_profile = await repo.get(event_id)
+        full_profile = await repo.get(event_id, user_id=user_id)
         assert full_profile is not None
         assert full_profile.budget is not None
         assert full_profile.budget.total_budget_inr == 1800000
@@ -721,10 +737,10 @@ async def test_live_postgres_full_lifecycle_and_foreign_keys() -> None:
         assert len(full_profile.recovery_records) == 1
 
         # 10. Delete Event and verify ON DELETE CASCADE
-        deleted = await repo.delete(event_id)
+        deleted = await repo.delete(event_id, user_id=user_id)
         assert deleted is True
-        assert await repo.get(event_id) is None
-        assert await repo.count() == 0
+        assert await repo.get(event_id, user_id=user_id) is None
+        assert await repo.count(user_id=user_id) == 0
 
         # Ensure related records in sub-tables were cleaned up
         async with repo.acquire_connection() as conn:
@@ -748,6 +764,9 @@ async def test_live_postgres_full_lifecycle_and_foreign_keys() -> None:
                 "SELECT COUNT(*) FROM public.crisis_recovery_actions WHERE recovery_id = 'REC-LIVE-1';"
             )
             assert act_count == 0
+
+            # Clean up user
+            await conn.execute("DELETE FROM auth.users WHERE id = $1;", user_id)
 
     finally:
         await repo.disconnect()

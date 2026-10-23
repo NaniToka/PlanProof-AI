@@ -81,6 +81,13 @@ from app.services.gemini_service import (
     GeminiService,
     GeminiTimeoutError,
 )
+from app.auth import (
+    AuthenticationError,
+    AuthenticatedUser,
+    GuestUser,
+    get_current_user,
+    get_current_user_or_guest,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -206,6 +213,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "code": "VALIDATION_ERROR",
                     "message": "Request validation failed",
                     "details": formatted_details,
+                }
+            },
+        )
+
+    @app.exception_handler(AuthenticationError)
+    async def authentication_exception_handler(
+        _request: Request, exc: AuthenticationError
+    ) -> JSONResponse:
+        """Handle authentication failures with standard 401 response and WWW-Authenticate header."""
+        return JSONResponse(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            headers={"WWW-Authenticate": "Bearer"},
+            content={
+                "error": {
+                    "code": exc.code,
+                    "message": exc.message,
+                    "details": None,
                 }
             },
         )
@@ -524,6 +548,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         response_model=EventProfile,
         status_code=status.HTTP_201_CREATED,
         responses={
+            401: {"model": StandardErrorResponse, "description": "Authentication required or invalid"},
             422: {"model": StandardErrorResponse, "description": "Validation failed"},
         },
         tags=["Events"],
@@ -531,11 +556,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     async def create_event(
         request_data: EventCreateRequest,
+        current_user: AuthenticatedUser | GuestUser = Depends(get_current_user_or_guest),
         service: EventService = Depends(get_event_service),
     ) -> EventProfile:
         """Create a new event profile and calculate its initial 8-category budget."""
         try:
-            return await service.create_event(request_data)
+            return await service.create_event(request_data, user_id=current_user.user_id)
         except ValueError as exc:
             raise StarletteHTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -546,6 +572,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         "/api/v1/events/{event_id}",
         response_model=EventProfile,
         responses={
+            401: {"model": StandardErrorResponse, "description": "Authentication required or invalid"},
             404: {"model": StandardErrorResponse, "description": "Event profile not found"},
         },
         tags=["Events"],
@@ -553,10 +580,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     async def get_event(
         event_id: str,
+        current_user: AuthenticatedUser | GuestUser = Depends(get_current_user_or_guest),
         service: EventService = Depends(get_event_service),
     ) -> EventProfile:
         """Retrieve an existing event profile by its server-generated ID."""
-        profile = await service.get_event(event_id)
+        profile = await service.get_event(event_id, user_id=current_user.user_id)
         if profile is None:
             raise StarletteHTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -568,6 +596,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         "/api/v1/events/{event_id}",
         response_model=EventProfile,
         responses={
+            401: {"model": StandardErrorResponse, "description": "Authentication required or invalid"},
             404: {"model": StandardErrorResponse, "description": "Event profile not found"},
             422: {"model": StandardErrorResponse, "description": "Validation failed"},
         },
@@ -577,11 +606,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def update_event(
         event_id: str,
         update_data: EventUpdateRequest,
+        current_user: AuthenticatedUser | GuestUser = Depends(get_current_user_or_guest),
         service: EventService = Depends(get_event_service),
     ) -> EventProfile:
         """Apply partial updates to an event profile and recalculate budget if necessary."""
         try:
-            profile = await service.update_event(event_id, update_data)
+            profile = await service.update_event(
+                event_id, update_data, user_id=current_user.user_id
+            )
         except ValueError as exc:
             raise StarletteHTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -595,9 +627,36 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         return profile
 
+    @app.delete(
+        "/api/v1/events/{event_id}",
+        status_code=status.HTTP_200_OK,
+        responses={
+            401: {"model": StandardErrorResponse, "description": "Authentication required or invalid"},
+            404: {"model": StandardErrorResponse, "description": "Event profile not found"},
+        },
+        tags=["Events"],
+        summary="Delete an existing event profile",
+    )
+    async def delete_event(
+        event_id: str,
+        current_user: AuthenticatedUser | GuestUser = Depends(get_current_user_or_guest),
+        service: EventService = Depends(get_event_service),
+    ) -> dict[str, str]:
+        """Delete an event profile owned by the current user."""
+        deleted = await service.delete_event_profile(event_id, user_id=current_user.user_id)
+        if not deleted:
+            raise StarletteHTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Event profile '{event_id}' not found.",
+            )
+        return {"status": "deleted", "event_id": event_id}
+
     @app.get(
         "/api/v1/events",
         response_model=EventListResponse,
+        responses={
+            401: {"model": StandardErrorResponse, "description": "Authentication required or invalid"},
+        },
         tags=["Events"],
         summary="List active event profiles with pagination",
     )
@@ -606,10 +665,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         limit: int = Query(
             default=50, ge=1, le=100, description="Maximum number of events to return"
         ),
+        current_user: AuthenticatedUser | GuestUser = Depends(get_current_user_or_guest),
         service: EventService = Depends(get_event_service),
     ) -> EventListResponse:
-        """List event profiles currently stored in the ephemeral memory repository."""
-        events, total = await service.list_events(skip=skip, limit=limit)
+        """List event profiles currently stored in the repository for the active user."""
+        events, total = await service.list_events(
+            skip=skip, limit=limit, user_id=current_user.user_id
+        )
         return EventListResponse(
             total=total,
             skip=skip,
@@ -621,6 +683,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         "/api/v1/events/{event_id}/budget",
         response_model=EventBudgetPlanResponse,
         responses={
+            401: {"model": StandardErrorResponse, "description": "Authentication required or invalid"},
             404: {"model": StandardErrorResponse, "description": "Event profile not found"},
         },
         tags=["Budget", "Events"],
@@ -628,10 +691,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     async def get_event_budget(
         event_id: str,
+        current_user: AuthenticatedUser | GuestUser = Depends(get_current_user_or_guest),
         service: EventService = Depends(get_event_service),
     ) -> EventBudgetPlanResponse:
         """Retrieve the deterministic 8-category budget plan for a saved event profile."""
-        plan = await service.get_event_budget_plan(event_id)
+        plan = await service.get_event_budget_plan(event_id, user_id=current_user.user_id)
         if plan is None:
             raise StarletteHTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -643,6 +707,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         "/api/v1/events/{event_id}/budget/rebalance",
         response_model=BudgetRebalanceResponse,
         responses={
+            401: {"model": StandardErrorResponse, "description": "Authentication required or invalid"},
             404: {"model": StandardErrorResponse, "description": "Event profile not found"},
             422: {"model": StandardErrorResponse, "description": "Validation or constraint error"},
         },
@@ -652,6 +717,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def rebalance_event_budget_endpoint(
         event_id: str,
         request_data: EventBudgetRebalanceRequest,
+        current_user: AuthenticatedUser | GuestUser = Depends(get_current_user_or_guest),
         service: EventService = Depends(get_event_service),
     ) -> BudgetRebalanceResponse:
         """Rebalance the budget of a saved event profile and persist the updated allocations."""
@@ -659,6 +725,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             event_id=event_id,
             new_total_budget_inr=request_data.new_total_budget_inr,
             strict_protect=request_data.strict_protect,
+            user_id=current_user.user_id,
         )
         if result is None:
             raise StarletteHTTPException(
@@ -671,6 +738,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         "/api/v1/events/{event_id}/timeline",
         response_model=EventTimelineScheduleResponse,
         responses={
+            401: {"model": StandardErrorResponse, "description": "Authentication required or invalid"},
             404: {"model": StandardErrorResponse, "description": "Event profile not found"},
         },
         tags=["Timeline", "Events"],
@@ -682,10 +750,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             default=None,
             description="Simulated reference date for deterministic deadline calculations (defaults to IST current date)",
         ),
+        current_user: AuthenticatedUser | GuestUser = Depends(get_current_user_or_guest),
         service: EventService = Depends(get_event_service),
     ) -> EventTimelineScheduleResponse:
         """Retrieve deterministic timeline with milestones and deadline calculations for an event."""
-        timeline = await service.get_event_timeline(event_id, reference_date=reference_date)
+        timeline = await service.get_event_timeline(
+            event_id, reference_date=reference_date, user_id=current_user.user_id
+        )
         if timeline is None:
             raise StarletteHTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -697,6 +768,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         "/api/v1/events/{event_id}/timeline/milestones/{milestone_id}",
         response_model=EventMilestone,
         responses={
+            401: {"model": StandardErrorResponse, "description": "Authentication required or invalid"},
             404: {"model": StandardErrorResponse, "description": "Event or milestone not found"},
             422: {"model": StandardErrorResponse, "description": "Validation or date constraint error"},
         },
@@ -711,6 +783,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             default=None,
             description="Simulated reference date for deterministic deadline calculations (defaults to IST current date)",
         ),
+        current_user: AuthenticatedUser | GuestUser = Depends(get_current_user_or_guest),
         service: EventService = Depends(get_event_service),
     ) -> EventMilestone:
         """Update a milestone's completion status (pending or completed) in ephemeral memory."""
@@ -720,6 +793,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 milestone_id=milestone_id,
                 status=request_data.status,
                 reference_date=reference_date,
+                user_id=current_user.user_id,
             )
         except KeyError as exc:
             raise StarletteHTTPException(
@@ -743,6 +817,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         "/api/v1/events/{event_id}/vendors/checklist",
         response_model=EventVendorChecklistResponse,
         responses={
+            401: {"model": StandardErrorResponse, "description": "Authentication required or invalid"},
             404: {"model": StandardErrorResponse, "description": "Event profile not found"},
         },
         tags=["Vendors", "Events"],
@@ -750,10 +825,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     async def get_event_vendor_checklist(
         event_id: str,
+        current_user: AuthenticatedUser | GuestUser = Depends(get_current_user_or_guest),
         service: EventService = Depends(get_event_service),
     ) -> EventVendorChecklistResponse:
         """Retrieve or lazily initialize the vendor coordination checklist for an event."""
-        checklist = await service.get_event_vendor_checklist(event_id)
+        checklist = await service.get_event_vendor_checklist(
+            event_id, user_id=current_user.user_id
+        )
         if checklist is None:
             raise StarletteHTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -765,6 +843,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         "/api/v1/events/{event_id}/vendors/checklist/{item_id}",
         response_model=EventVendorChecklistItem,
         responses={
+            401: {"model": StandardErrorResponse, "description": "Authentication required or invalid"},
             404: {"model": StandardErrorResponse, "description": "Event or checklist item not found"},
             422: {"model": StandardErrorResponse, "description": "Validation error"},
         },
@@ -775,6 +854,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         event_id: str,
         item_id: str,
         request_data: VendorChecklistItemUpdateRequest,
+        current_user: AuthenticatedUser | GuestUser = Depends(get_current_user_or_guest),
         service: EventService = Depends(get_event_service),
     ) -> EventVendorChecklistItem:
         """Update permitted fields (status, notes, priority, vendor_name, booking_status) on a checklist item."""
@@ -783,6 +863,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 event_id=event_id,
                 item_id=item_id,
                 request=request_data,
+                user_id=current_user.user_id,
             )
         except KeyError as exc:
             raise StarletteHTTPException(
@@ -806,6 +887,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         "/api/v1/events/{event_id}/ideas",
         response_model=AIResultEnvelope[EventIdeasResponse],
         responses={
+            401: {"model": StandardErrorResponse, "description": "Authentication required or invalid"},
             404: {"model": StandardErrorResponse, "description": "Event profile not found"},
             422: {"model": StandardErrorResponse, "description": "Validation error"},
         },
@@ -820,6 +902,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         limit: int = Query(
             default=10, ge=1, le=50, description="Maximum number of recommendations to return"
         ),
+        current_user: AuthenticatedUser | GuestUser = Depends(get_current_user_or_guest),
         service: EventService = Depends(get_event_service),
         orchestrator: AIOrchestrator = Depends(get_ai_orchestrator),
     ) -> AIResultEnvelope[EventIdeasResponse]:
@@ -829,6 +912,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             orchestrator=orchestrator,
             category=category,
             limit=limit,
+            user_id=current_user.user_id,
         )
         if result is None:
             raise StarletteHTTPException(
@@ -841,6 +925,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         "/api/v1/events/{event_id}/risks",
         response_model=AIResultEnvelope[EventRisksResponse],
         responses={
+            401: {"model": StandardErrorResponse, "description": "Authentication required or invalid"},
             404: {"model": StandardErrorResponse, "description": "Event profile not found"},
             422: {"model": StandardErrorResponse, "description": "Validation error"},
         },
@@ -853,6 +938,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             default=None,
             description="Optional simulated reference date for timeline calculations (defaults to current date)",
         ),
+        current_user: AuthenticatedUser | GuestUser = Depends(get_current_user_or_guest),
         service: EventService = Depends(get_event_service),
         orchestrator: AIOrchestrator = Depends(get_ai_orchestrator),
     ) -> AIResultEnvelope[EventRisksResponse]:
@@ -861,6 +947,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             event_id=event_id,
             orchestrator=orchestrator,
             reference_date=reference_date,
+            user_id=current_user.user_id,
         )
         if result is None:
             raise StarletteHTTPException(
@@ -873,6 +960,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         "/api/v1/events/{event_id}/family-council",
         response_model=AIResultEnvelope[EventFamilyCouncilResponse],
         responses={
+            401: {"model": StandardErrorResponse, "description": "Authentication required or invalid"},
             404: {"model": StandardErrorResponse, "description": "Event profile not found"},
             422: {"model": StandardErrorResponse, "description": "Validation error"},
         },
@@ -885,6 +973,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             default=None,
             description="Optional simulated reference date for timeline calculations (defaults to current date)",
         ),
+        current_user: AuthenticatedUser | GuestUser = Depends(get_current_user_or_guest),
         service: EventService = Depends(get_event_service),
         orchestrator: AIOrchestrator = Depends(get_ai_orchestrator),
     ) -> AIResultEnvelope[EventFamilyCouncilResponse]:
@@ -893,6 +982,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             event_id=event_id,
             orchestrator=orchestrator,
             reference_date=reference_date,
+            user_id=current_user.user_id,
         )
         if result is None:
             raise StarletteHTTPException(
@@ -915,6 +1005,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         "/api/v1/events/{event_id}/crisis/evaluate",
         response_model=AIResultEnvelope[EventCrisisRecoveryResponse],
         responses={
+            401: {"model": StandardErrorResponse, "description": "Authentication required or invalid"},
             404: {"model": StandardErrorResponse, "description": "Event profile not found"},
             422: {"model": StandardErrorResponse, "description": "Validation error"},
         },
@@ -924,6 +1015,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def evaluate_crisis_for_event(
         event_id: str,
         request_body: CrisisEvaluationRequest,
+        current_user: AuthenticatedUser | GuestUser = Depends(get_current_user_or_guest),
         service: EventService = Depends(get_event_service),
         dataset_repo: DatasetRepository = Depends(get_dataset_repository),
         orchestrator: AIOrchestrator = Depends(get_ai_orchestrator),
@@ -934,6 +1026,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             request=request_body,
             dataset_repo=dataset_repo,
             orchestrator=orchestrator,
+            user_id=current_user.user_id,
         )
         if result is None:
             raise StarletteHTTPException(
@@ -947,6 +1040,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         response_model=CrisisRecoveryRecord,
         status_code=status.HTTP_201_CREATED,
         responses={
+            401: {"model": StandardErrorResponse, "description": "Authentication required or invalid"},
             404: {"model": StandardErrorResponse, "description": "Event profile not found"},
             422: {"model": StandardErrorResponse, "description": "Validation error or invalid status"},
         },
@@ -956,10 +1050,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def create_recovery_record(
         event_id: str,
         request_body: RecoveryRecordCreateRequest,
+        current_user: AuthenticatedUser | GuestUser = Depends(get_current_user_or_guest),
         service: EventService = Depends(get_event_service),
     ) -> CrisisRecoveryRecord:
         """Save a validated recovery record from a generated plan and initialize action tracking."""
-        record = await service.save_recovery_record(event_id=event_id, request=request_body)
+        record = await service.save_recovery_record(
+            event_id=event_id, request=request_body, user_id=current_user.user_id
+        )
         if record is None:
             raise StarletteHTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -971,6 +1068,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         "/api/v1/events/{event_id}/crisis/recoveries",
         response_model=list[CrisisRecoveryRecord],
         responses={
+            401: {"model": StandardErrorResponse, "description": "Authentication required or invalid"},
             404: {"model": StandardErrorResponse, "description": "Event profile not found"},
         },
         tags=["Crisis Recovery", "Events"],
@@ -980,10 +1078,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         event_id: str,
         skip: int = Query(default=0, ge=0, description="Offset for pagination"),
         limit: int = Query(default=50, ge=1, le=100, description="Limit batch size"),
+        current_user: AuthenticatedUser | GuestUser = Depends(get_current_user_or_guest),
         service: EventService = Depends(get_event_service),
     ) -> list[CrisisRecoveryRecord]:
         """List historical recovery records for the target event sorted by creation date newest first."""
-        records = await service.list_recovery_records(event_id=event_id, skip=skip, limit=limit)
+        records = await service.list_recovery_records(
+            event_id=event_id, skip=skip, limit=limit, user_id=current_user.user_id
+        )
         if records is None:
             raise StarletteHTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -995,6 +1096,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         "/api/v1/events/{event_id}/crisis/recoveries/{recovery_id}",
         response_model=CrisisRecoveryRecord,
         responses={
+            401: {"model": StandardErrorResponse, "description": "Authentication required or invalid"},
             404: {"model": StandardErrorResponse, "description": "Event profile or recovery record not found"},
         },
         tags=["Crisis Recovery", "Events"],
@@ -1003,16 +1105,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def get_recovery_record(
         event_id: str,
         recovery_id: str,
+        current_user: AuthenticatedUser | GuestUser = Depends(get_current_user_or_guest),
         service: EventService = Depends(get_event_service),
     ) -> CrisisRecoveryRecord:
         """Retrieve a specific saved recovery record and its tracked action items."""
-        profile = await service.get_event(event_id)
+        profile = await service.get_event(event_id, user_id=current_user.user_id)
         if profile is None:
             raise StarletteHTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Event profile '{event_id}' not found.",
             )
-        record = await service.get_recovery_record(event_id=event_id, recovery_id=recovery_id)
+        record = await service.get_recovery_record(
+            event_id=event_id, recovery_id=recovery_id, user_id=current_user.user_id
+        )
         if record is None:
             raise StarletteHTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -1024,6 +1129,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         "/api/v1/events/{event_id}/crisis/recoveries/{recovery_id}",
         response_model=CrisisRecoveryRecord,
         responses={
+            401: {"model": StandardErrorResponse, "description": "Authentication required or invalid"},
             404: {"model": StandardErrorResponse, "description": "Event profile or recovery record not found"},
             422: {"model": StandardErrorResponse, "description": "Validation error or invalid status"},
         },
@@ -1034,10 +1140,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         event_id: str,
         recovery_id: str,
         request_body: RecoveryRecordUpdateRequest,
+        current_user: AuthenticatedUser | GuestUser = Depends(get_current_user_or_guest),
         service: EventService = Depends(get_event_service),
     ) -> CrisisRecoveryRecord:
         """Update supported fields on a recovery record, recalculating summary counts."""
-        profile = await service.get_event(event_id)
+        profile = await service.get_event(event_id, user_id=current_user.user_id)
         if profile is None:
             raise StarletteHTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -1047,6 +1154,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             event_id=event_id,
             recovery_id=recovery_id,
             request=request_body,
+            user_id=current_user.user_id,
         )
         if record is None:
             raise StarletteHTTPException(
@@ -1059,6 +1167,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         "/api/v1/events/{event_id}/crisis/recoveries/{recovery_id}/actions/{action_id}",
         response_model=TrackedRecoveryAction,
         responses={
+            401: {"model": StandardErrorResponse, "description": "Authentication required or invalid"},
             404: {"model": StandardErrorResponse, "description": "Event, recovery, or action not found"},
             422: {"model": StandardErrorResponse, "description": "Validation error or invalid status"},
         },
@@ -1070,16 +1179,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         recovery_id: str,
         action_id: str,
         request_body: TrackedActionUpdateRequest,
+        current_user: AuthenticatedUser | GuestUser = Depends(get_current_user_or_guest),
         service: EventService = Depends(get_event_service),
     ) -> TrackedRecoveryAction:
         """Update execution status and notes for an action, automatically recalculating recovery progress."""
-        profile = await service.get_event(event_id)
+        profile = await service.get_event(event_id, user_id=current_user.user_id)
         if profile is None:
             raise StarletteHTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Event profile '{event_id}' not found.",
             )
-        rec = await service.get_recovery_record(event_id=event_id, recovery_id=recovery_id)
+        rec = await service.get_recovery_record(
+            event_id=event_id, recovery_id=recovery_id, user_id=current_user.user_id
+        )
         if rec is None:
             raise StarletteHTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -1090,6 +1202,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             recovery_id=recovery_id,
             action_id=action_id,
             request=request_body,
+            user_id=current_user.user_id,
         )
         if action is None:
             raise StarletteHTTPException(
@@ -1102,6 +1215,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         "/api/v1/events/{event_id}/readiness",
         response_model=EventReadinessResponse,
         responses={
+            401: {"model": StandardErrorResponse, "description": "Authentication required or invalid"},
             404: {"model": StandardErrorResponse, "description": "Event profile not found"},
         },
         tags=["Events"],
@@ -1113,6 +1227,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             default=None,
             description="Optional simulated reference date for timeline calculations (defaults to today)",
         ),
+        current_user: AuthenticatedUser | GuestUser = Depends(get_current_user_or_guest),
         service: EventService = Depends(get_event_service),
     ) -> EventReadinessResponse:
         """Deterministically assess event planning readiness across all domains.
@@ -1124,6 +1239,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         readiness = await service.get_event_readiness(
             event_id=event_id,
             reference_date=reference_date,
+            user_id=current_user.user_id,
         )
         if readiness is None:
             raise StarletteHTTPException(
