@@ -55,6 +55,7 @@ from app.schemas import (
     RecoveryRecordUpdateRequest,
     TrackedActionUpdateRequest,
     TrackedRecoveryAction,
+    EventReadinessResponse,
 )
 from app.services.ai_orchestrator import AIOrchestrator
 from app.services.crisis_service import SUPPORTED_CRISIS_TYPES
@@ -1030,6 +1031,40 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 detail=f"Tracked action '{action_id}' not found in recovery record '{recovery_id}'.",
             )
         return action
+
+    @app.get(
+        "/api/v1/events/{event_id}/readiness",
+        response_model=EventReadinessResponse,
+        responses={
+            404: {"model": StandardErrorResponse, "description": "Event profile not found"},
+        },
+        tags=["Events"],
+        summary="Assess event planning readiness and diagnostic progress",
+    )
+    async def get_event_readiness(
+        event_id: str,
+        reference_date: date | None = Query(
+            default=None,
+            description="Optional simulated reference date for timeline calculations (defaults to today)",
+        ),
+        service: EventService = Depends(get_event_service),
+    ) -> EventReadinessResponse:
+        """Deterministically assess event planning readiness across all domains.
+
+        Evaluates planning completeness, budget allocations and safety buffer,
+        timeline milestones and overdue tasks, vendor coordination progress,
+        pre-mortem risks, and crisis follow-up actions.
+        """
+        readiness = await service.get_event_readiness(
+            event_id=event_id,
+            reference_date=reference_date,
+        )
+        if readiness is None:
+            raise StarletteHTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Event profile with identifier '{event_id}' was not found.",
+            )
+        return readiness
 
     @app.get(
         "/api/v1/ai/status",

@@ -60,7 +60,9 @@ from app.schemas import (
     TrackedActionInput,
     TrackedActionUpdateRequest,
     TrackedRecoveryAction,
+    EventReadinessResponse,
 )
+from app.services.readiness_service import ReadinessService
 from app.services.budget import (
     calculate_initial_budget,
     compute_budget_warnings,
@@ -1314,6 +1316,29 @@ class EventService:
             updated_rec.status.value,
         )
         return updated_action
+
+    async def get_event_readiness(
+        self,
+        event_id: str,
+        reference_date: date | None = None,
+    ) -> EventReadinessResponse | None:
+        """Assess event planning readiness deterministically across all domains.
+
+        Args:
+            event_id: Target event profile identifier.
+            reference_date: Optional simulated reference date for timeline calculations.
+
+        Returns:
+            EventReadinessResponse if event profile exists, None otherwise.
+        """
+        profile = await self.get_event(event_id)
+        if profile is None:
+            return None
+
+        return ReadinessService.calculate_readiness(
+            profile=profile,
+            reference_date=reference_date,
+        )
 
 
 def recalculate_recovery_progress(

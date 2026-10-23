@@ -2081,6 +2081,120 @@ class AIResultEnvelope(BaseModel, Generic[DataT]):
         return self
 
 
+# ==============================================================================
+# PROMPT 19: EVENT READINESS SCORE & PLANNING PROGRESS SCHEMAS
+# ==============================================================================
+
+
+class ReadinessStatus(StrEnum):
+    """Lifecycle and progress status for overall event readiness."""
+
+    NOT_STARTED = "not_started"
+    NEEDS_ATTENTION = "needs_attention"
+    IN_PROGRESS = "in_progress"
+    WELL_PREPARED = "well_prepared"
+    INSUFFICIENT_DATA = "insufficient_data"
+
+
+class ReadinessCategory(StrEnum):
+    """Core evaluation domain for event readiness assessment."""
+
+    PLANNING_COMPLETENESS = "planning_completeness"
+    BUDGET_READINESS = "budget_readiness"
+    TIMELINE_READINESS = "timeline_readiness"
+    VENDOR_COORDINATION = "vendor_coordination"
+    RISK_PREPAREDNESS = "risk_preparedness"
+    CRISIS_FOLLOWUP = "crisis_followup"
+
+
+class ReadinessActionPriority(StrEnum):
+    """Urgency priority for recommended next planning actions."""
+
+    CRITICAL = "critical"
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+
+
+class ReadinessCategoryScore(BaseModel):
+    """Category-level score, status, explanation, and supporting metrics."""
+
+    category: ReadinessCategory = Field(..., description="Evaluation domain category")
+    name: str = Field(..., min_length=1, max_length=100, description="Human-readable category name")
+    score: int | None = Field(
+        default=None, ge=0, le=100, description="Deterministic category score (0-100), or None if unavailable"
+    )
+    weight_percentage: float = Field(
+        default=0.0, ge=0.0, le=100.0, description="Normalized weight percentage in overall score"
+    )
+    is_available: bool = Field(
+        default=True, description="Whether sufficient underlying data exists to score this category"
+    )
+    explanation: str = Field(
+        ..., min_length=1, max_length=500, description="Concise diagnostic summary of category health"
+    )
+    supporting_counts: dict[str, int | float] = Field(
+        default_factory=dict, description="Supporting operational counts and metrics"
+    )
+
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+
+class ReadinessNextAction(BaseModel):
+    """Prioritized planning action item referencing real existing tasks or risks."""
+
+    action_id: str = Field(..., min_length=1, max_length=100, description="Unique action identifier")
+    title: str = Field(..., min_length=1, max_length=200, description="Short actionable title")
+    description: str = Field(..., min_length=1, max_length=500, description="Detailed instructions")
+    priority: ReadinessActionPriority = Field(..., description="Action priority level")
+    category: str = Field(..., min_length=1, max_length=50, description="Domain category (timeline, vendor, risk, etc.)")
+    target_id: str | None = Field(
+        default=None, max_length=100, description="Referenced entity ID (milestone, vendor task, risk, recovery action)"
+    )
+    target_view: str = Field(
+        ..., min_length=1, max_length=50, description="Frontend navigation target view"
+    )
+
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+
+class EventReadinessResponse(BaseModel):
+    """Comprehensive deterministic event readiness assessment and planning progress."""
+
+    event_id: str = Field(..., min_length=1, description="Target event profile identifier")
+    overall_score: int | None = Field(
+        default=None, ge=0, le=100, description="Deterministic overall readiness score (0-100), or None if insufficient data"
+    )
+    readiness_status: ReadinessStatus = Field(
+        ..., description="Overall readiness state (not_started, needs_attention, in_progress, well_prepared, insufficient_data)"
+    )
+    category_scores: list[ReadinessCategoryScore] = Field(
+        default_factory=list, description="Detailed category breakdowns"
+    )
+    completed_items: int = Field(default=0, ge=0, description="Total count of completed planning items")
+    outstanding_items: int = Field(default=0, ge=0, description="Total count of pending/incomplete planning items")
+    critical_concerns: list[str] = Field(
+        default_factory=list, description="Critical risks, overdue milestones, or missing safety buffers requiring attention"
+    )
+    recommended_next_actions: list[ReadinessNextAction] = Field(
+        default_factory=list, description="Prioritized next steps referencing real planning items"
+    )
+    missing_information: list[str] = Field(
+        default_factory=list, description="Information gaps that reduce readiness or prevent full evaluation"
+    )
+    calculation_method: str = Field(
+        default="Deterministic multi-category weighted average (Planning: 15%, Budget: 25%, Timeline: 20%, Vendors: 25%, Risks: 15%; dynamically normalized for available categories).",
+        description="Scoring methodology description"
+    )
+    generated_at: datetime = Field(..., description="Generation timestamp in UTC")
+    disclaimer: str = Field(
+        default="The Event Readiness Score is a deterministic planning progress metric reflecting documented completion of tasks, buffer allocation, and risk mitigations. It is an operational guide, not a guarantee or statistical prediction of event success.",
+        description="Planning disclaimer"
+    )
+
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+
 # Rebuild EventProfile to resolve forward reference to CrisisRecoveryRecord
 EventProfile.model_rebuild()
 

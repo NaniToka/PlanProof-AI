@@ -32,6 +32,8 @@ const state = {
   selectedRecoveryId: null,
   selectedRecovery: null,
   isLoadingRecoveries: false,
+  readiness: null,
+  isLoadingReadiness: false,
 };
 
 // ==============================================================================
@@ -193,6 +195,11 @@ const API = {
       body: JSON.stringify(payload),
     });
   },
+
+  getReadiness(eventId, referenceDate = null) {
+    const q = referenceDate ? `?reference_date=${encodeURIComponent(referenceDate)}` : '';
+    return this.request(`/api/v1/events/${encodeURIComponent(eventId)}/readiness${q}`);
+  },
 };
 
 // ==============================================================================
@@ -304,16 +311,18 @@ async function renderOverview() {
   container.innerHTML = `<div class="empty-state"><div class="empty-state-icon">⏳</div><p>Loading event overview...</p></div>`;
 
   try {
-    const [profile, budgetPlan, timeline, vendors, risks, council] = await Promise.all([
+    const [profile, budgetPlan, timeline, vendors, risks, council, readiness] = await Promise.all([
       API.getEvent(state.currentEventId),
       API.getBudget(state.currentEventId).catch(() => null),
       API.getTimeline(state.currentEventId).catch(() => null),
       API.getVendors(state.currentEventId).catch(() => null),
       API.getRisks(state.currentEventId).catch(() => null),
       API.getFamilyCouncil(state.currentEventId).catch(() => null),
+      API.getReadiness(state.currentEventId).catch(() => null),
     ]);
 
     state.currentEvent = profile;
+    if (readiness) state.readiness = readiness;
     updateActiveEventBadge(profile);
 
     const daysRemaining = calculateDaysRemaining(profile.event_date);
@@ -368,6 +377,33 @@ async function renderOverview() {
           </div>
         </div>
       </div>
+
+      <!-- Readiness Score Banner -->
+      ${readiness ? `
+        <div class="overview-readiness-banner" onclick="switchView('readiness')" role="button" tabindex="0" aria-label="View Event Readiness Assessment">
+          <div style="display: flex; align-items: center; gap: 1.25rem;">
+            <div style="width: 54px; height: 54px; border-radius: 50%; border: 3px solid ${readiness.overall_score >= 80 ? '#10B981' : (readiness.overall_score >= 60 ? 'var(--electric-cyan)' : '#F59E0B')}; display: flex; align-items: center; justify-content: center; font-family: var(--font-mono); font-weight: 900; font-size: 1.3rem; color: var(--text-primary); background: var(--bg-surface-2);">
+              ${readiness.overall_score !== null ? readiness.overall_score : '—'}
+            </div>
+            <div>
+              <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.25rem;">
+                <span style="font-weight: 800; font-size: 1.05rem; color: var(--text-primary);">Event Readiness Score</span>
+                <span class="badge ${readiness.overall_score >= 80 ? 'badge-success' : 'badge-warning'}" style="font-size: 0.75rem;">
+                  ${readiness.readiness_status.replace('_', ' ').toUpperCase()}
+                </span>
+              </div>
+              <div style="font-size: 0.85rem; color: var(--text-muted);">
+                ${readiness.critical_concerns.length > 0 
+                  ? `⚠️ ${readiness.critical_concerns.length} critical concern(s) require attention · Click to view diagnostics`
+                  : `${readiness.completed_items} completed items · Click to view full readiness assessment`}
+              </div>
+            </div>
+          </div>
+          <button type="button" class="btn btn-cyan btn-sm">
+            View Assessment ➔
+          </button>
+        </div>
+      ` : ''}
 
       <!-- Quick Metric Tiles -->
       <div class="grid-4" style="margin-bottom: 1.5rem;">
@@ -2472,6 +2508,228 @@ function renderRecoveryDetailView(container, record) {
 }
 
 // ==============================================================================
+// PROMPT 19: EVENT READINESS SCORE & PLANNING PROGRESS VIEW
+// ==============================================================================
+
+async function renderReadiness() {
+  const container = document.getElementById('readiness-content');
+  if (!container) return;
+
+  if (!state.currentEventId) {
+    renderEmptyEventState(container, 'Event Readiness Score');
+    return;
+  }
+
+  container.innerHTML = `
+    <div class="view-header">
+      <div>
+        <h1 class="view-title" id="readiness-heading">🎯 Event Readiness Score & Planning Progress</h1>
+        <p class="view-subtitle">Deterministic evaluation of budget safety buffers, milestone timeliness, vendor bookings, and risk mitigations.</p>
+      </div>
+      <div class="header-actions">
+        <button class="btn btn-secondary btn-sm" onclick="renderReadiness()">
+          🔄 Refresh Assessment
+        </button>
+      </div>
+    </div>
+    <div class="loading-state"><div class="spinner"></div></div>
+  `;
+
+  try {
+    const data = await API.getReadiness(state.currentEventId);
+    state.readiness = data;
+
+    const statusMap = {
+      'well_prepared': { label: 'Well Prepared', class: 'status-well_prepared', dialClass: 'dial-well_prepared', icon: '✅' },
+      'in_progress': { label: 'In Progress', class: 'status-in_progress', dialClass: 'dial-in_progress', icon: '⏳' },
+      'needs_attention': { label: 'Needs Attention', class: 'status-needs_attention', dialClass: 'dial-needs_attention', icon: '⚠️' },
+      'not_started': { label: 'Not Started', class: 'status-not_started', dialClass: 'dial-not_started', icon: '⚪' },
+      'insufficient_data': { label: 'Insufficient Data', class: 'status-insufficient_data', dialClass: 'dial-insufficient_data', icon: '❌' },
+    };
+    const sInfo = statusMap[data.readiness_status] || statusMap['in_progress'];
+    const scoreDisplay = data.overall_score !== null ? data.overall_score : '—';
+
+    container.innerHTML = `
+      <div class="view-header">
+        <div>
+          <h1 class="view-title" id="readiness-heading">🎯 Event Readiness Score & Planning Progress</h1>
+          <p class="view-subtitle">Deterministic evaluation of budget safety buffers, milestone timeliness, vendor bookings, and risk mitigations.</p>
+        </div>
+        <div class="header-actions">
+          <button class="btn btn-secondary btn-sm" onclick="renderReadiness()">
+            🔄 Refresh Assessment
+          </button>
+        </div>
+      </div>
+
+      <!-- Hero Score Card -->
+      <div class="readiness-hero-card">
+        <div class="readiness-hero-left">
+          <div class="readiness-score-dial ${sInfo.dialClass}">
+            <div class="readiness-score-num">${scoreDisplay}</div>
+            <div class="readiness-score-denom">OUT OF 100</div>
+          </div>
+          <div class="readiness-hero-info">
+            <div class="readiness-status-badge ${sInfo.class}">
+              <span>${sInfo.icon}</span>
+              <span>${sInfo.label}</span>
+            </div>
+            <p style="font-size: 0.9rem; color: var(--text-secondary); max-width: 480px; margin: 0;">
+              ${data.overall_score !== null
+                ? `Event readiness is evaluated at <strong>${data.overall_score}%</strong> across active planning categories.`
+                : 'Missing core planning parameters prevent an authoritative readiness calculation.'}
+            </p>
+          </div>
+        </div>
+        <div class="readiness-hero-stats">
+          <div class="readiness-stat-item">
+            <span class="readiness-stat-val" style="color: #10B981;">${data.completed_items}</span>
+            <span class="readiness-stat-lbl">Completed Items</span>
+          </div>
+          <div class="readiness-stat-item">
+            <span class="readiness-stat-val" style="color: var(--electric-cyan);">${data.outstanding_items}</span>
+            <span class="readiness-stat-lbl">Pending Items</span>
+          </div>
+          <div class="readiness-stat-item">
+            <span class="readiness-stat-val" style="color: ${data.critical_concerns.length > 0 ? '#EF4444' : '#10B981'};">
+              ${data.critical_concerns.length}
+            </span>
+            <span class="readiness-stat-lbl">Critical Concerns</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Critical Concerns Box (if any) -->
+      ${data.critical_concerns && data.critical_concerns.length > 0 ? `
+        <div class="readiness-concerns-box">
+          <div class="readiness-concerns-title">
+            <span>🚨</span>
+            <span>Critical Concerns Requiring Immediate Host Attention (${data.critical_concerns.length})</span>
+          </div>
+          <ul class="readiness-concerns-list">
+            ${data.critical_concerns.map(c => `<li>${escapeHTML(c)}</li>`).join('')}
+          </ul>
+        </div>
+      ` : ''}
+
+      <!-- Missing Information Box (if any) -->
+      ${data.missing_information && data.missing_information.length > 0 ? `
+        <div class="readiness-missing-box">
+          <div class="readiness-missing-title">
+            <span>ℹ️</span>
+            <span>Planning Information Gaps (${data.missing_information.length})</span>
+          </div>
+          <ul class="readiness-concerns-list" style="color: var(--text-secondary);">
+            ${data.missing_information.map(m => `<li>${escapeHTML(m)}</li>`).join('')}
+          </ul>
+        </div>
+      ` : ''}
+
+      <!-- Prioritized Next Actions -->
+      <div class="readiness-actions-section">
+        <h2 style="font-size: 1.15rem; font-weight: 800; color: var(--text-primary); margin-bottom: 0.75rem;">
+          ⚡ Prioritized Next Actions (${data.recommended_next_actions.length})
+        </h2>
+        ${data.recommended_next_actions.length === 0 ? `
+          <div class="card" style="padding: 1.25rem; color: var(--text-muted); font-size: 0.9rem;">
+            No immediate pending actions detected. Your planning milestones and vendors are well aligned!
+          </div>
+        ` : `
+          <div class="readiness-actions-list">
+            ${data.recommended_next_actions.map(act => {
+              const pClass = act.priority === 'critical' ? 'badge-danger' : (act.priority === 'high' ? 'badge-warning' : 'badge-secondary');
+              const viewLabels = {
+                'timeline': 'Open Timeline ➔',
+                'vendors': 'Open Vendors ➔',
+                'budget': 'Open Budget ➔',
+                'risks': 'Open Risks ➔',
+                'recovery-history': 'Open Crisis History ➔',
+                'event-details': 'Edit Event Details ➔',
+              };
+              const ctaText = viewLabels[act.target_view] || 'View Section ➔';
+              return `
+                <div class="readiness-action-item">
+                  <div class="readiness-action-left">
+                    <div class="readiness-action-meta">
+                      <span class="badge ${pClass}">${escapeHTML(act.priority.toUpperCase())}</span>
+                      <span class="badge badge-amethyst">${escapeHTML(act.category.toUpperCase())}</span>
+                      ${act.target_id ? `<span style="font-size: 0.75rem; color: var(--text-muted); font-family: var(--font-mono);">${escapeHTML(act.target_id)}</span>` : ''}
+                    </div>
+                    <div class="readiness-action-title">${escapeHTML(act.title)}</div>
+                    <div class="readiness-action-desc">${escapeHTML(act.description)}</div>
+                  </div>
+                  <button type="button" class="btn btn-cyan btn-sm" style="flex-shrink: 0;" onclick="switchView('${escapeHTML(act.target_view)}')">
+                    ${escapeHTML(ctaText)}
+                  </button>
+                </div>
+              `;
+            }).join('')}
+          </div>
+        `}
+      </div>
+
+      <!-- Domain Category Score Breakdown -->
+      <div style="margin-bottom: 2rem;">
+        <h2 style="font-size: 1.15rem; font-weight: 800; color: var(--text-primary); margin-bottom: 1rem;">
+          📊 Planning Category Score Breakdown
+        </h2>
+        <div class="readiness-categories-grid">
+          ${data.category_scores.map(cat => {
+            const hasScore = cat.is_available && cat.score !== null;
+            const scoreVal = hasScore ? cat.score : 'N/A';
+            const barWidth = hasScore ? cat.score : 0;
+            return `
+              <div class="readiness-cat-card">
+                <div>
+                  <div class="readiness-cat-header">
+                    <div>
+                      <div class="readiness-cat-title">${escapeHTML(cat.name)}</div>
+                      <div class="readiness-cat-weight">Weight: ${cat.weight_percentage}%</div>
+                    </div>
+                    <div class="readiness-cat-score-pill" style="${!hasScore ? 'color: var(--text-muted); background: rgba(255,255,255,0.05); border-color: rgba(255,255,255,0.1);' : ''}">
+                      ${scoreVal}${hasScore ? '<span style="font-size: 0.75rem;">/100</span>' : ''}
+                    </div>
+                  </div>
+                  <div class="readiness-cat-bar-wrap">
+                    <div class="readiness-cat-bar-fill" style="width: ${barWidth}%;"></div>
+                  </div>
+                  <div class="readiness-cat-desc">${escapeHTML(cat.explanation)}</div>
+                </div>
+              </div>
+            `;
+          }).join('')}
+        </div>
+      </div>
+
+      <!-- Methodology & Advisory Footer -->
+      <div class="card" style="background: rgba(255,255,255,0.02); border: 1px dashed var(--amethyst-border); padding: 1.25rem;">
+        <div style="font-size: 0.8rem; color: var(--text-muted); line-height: 1.6;">
+          <strong style="color: var(--text-secondary);">Methodology:</strong> ${escapeHTML(data.calculation_method)}
+          <br>
+          <strong style="color: var(--text-secondary);">Disclaimer:</strong> ${escapeHTML(data.disclaimer)}
+        </div>
+      </div>
+    `;
+  } catch (err) {
+    console.error('Failed to load readiness assessment:', err);
+    container.innerHTML = `
+      <div class="view-header">
+        <div>
+          <h1 class="view-title" id="readiness-heading">🎯 Event Readiness Score & Planning Progress</h1>
+          <p class="view-subtitle">Deterministic evaluation of budget safety buffers, milestone timeliness, vendor bookings, and risk mitigations.</p>
+        </div>
+      </div>
+      <div class="empty-state">
+        <div class="empty-icon">⚠️</div>
+        <h2 class="empty-title">Failed to Load Readiness Assessment</h2>
+        <p class="empty-desc">${escapeHTML(err.message || 'Unable to retrieve readiness diagnostics from server.')}</p>
+        <button class="btn btn-cyan btn-sm" onclick="renderReadiness()">Retry</button>
+      </div>
+    `;
+  }
+}
+
+// ==============================================================================
 // 6. Navigation & Routing
 // ==============================================================================
 
@@ -2522,6 +2780,9 @@ function switchView(viewName) {
       break;
     case 'recovery-history':
       renderRecoveryHistory();
+      break;
+    case 'readiness':
+      renderReadiness();
       break;
     default:
       renderOverview();

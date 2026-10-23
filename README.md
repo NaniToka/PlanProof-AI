@@ -96,9 +96,9 @@ Open [http://localhost:8000](http://localhost:8000) in your browser to view the 
 
 ### Interactive Planning Console Navigation
 
-The web frontend at `http://localhost:8000` is an interactive planning console styled in **Jet Black (`#050505`)**, **Royal Amethyst (`#3B0A6B`)**, and **Electric Cyan (`#00E5FF`)**. It connects directly to the backend APIs across ten views:
+The web frontend at `http://localhost:8000` is an interactive planning console styled in **Jet Black (`#050505`)**, **Royal Amethyst (`#3B0A6B`)**, and **Electric Cyan (`#00E5FF`)**. It connects directly to the backend APIs across eleven views:
 
-1. **Overview (`#overview`)**: Quick metric tiles (total budget, headcount, milestone progress %, critical risks count), 8-category budget allocation bar, upcoming milestones, vendor progress, risk alert teaser, and family council summary.
+1. **Overview (`#overview`)**: Quick metric tiles (total budget, headcount, milestone progress %, critical risks count), 8-category budget allocation bar, upcoming milestones, vendor progress, risk alert teaser, readiness banner, and family council summary.
 2. **Event Details (`#event-details`)**: Complete event profile breakdown, live profile editor (`PATCH /api/v1/events/{id}`), and list of all stored event profiles.
 3. **Budget Planner (`#budget`)**: Visual breakdown of all 8 categories (Venue, Catering, Decor, Photo/Video, Attire/Beauty, Entertainment, Logistics, Contingency Buffer), per-guest cost calculation, buffer health status (≥ 5%), and interactive deterministic budget rebalancer.
 4. **Timeline (`#timeline`)**: Chronological milestone checklist with calendar deadlines, lead times (`T-150 days`), overdue alerts, category filters, and one-click completion toggles.
@@ -108,6 +108,7 @@ The web frontend at `http://localhost:8000` is an interactive planning console s
 8. **Family Council (`#council`)**: Simulated deliberation across four distinct personas (*The Budget Guardian*, *The Guest Comfort Advocate*, *The Tradition & Experience Keeper*, *The Logistics & Risk Planner*), creative trade-offs, and executive verdict.
 9. **Crisis Recovery Center (`#crisis`)**: Real-time evaluation of event disruptions, severity triage (1 to 5), 3-tier actionable recovery playbooks, ready-to-send bilingual WhatsApp alerts, and plan saving.
 10. **Crisis Recovery History & Action Tracker (`#recovery-history`)**: Event-scoped audit trail of evaluated crises, individual recovery drill-down, interactive action item tracking (`pending`, `in_progress`, `completed`), live progress computation, and coordination notes.
+11. **Event Readiness Score (`#readiness`)**: Holistic deterministic readiness evaluation (0-100), status gauge (`well_prepared`, `in_progress`, `needs_attention`, `not_started`, `insufficient_data`), category breakdowns, critical concerns alert box, and prioritized next actions referencing real tasks.
 
 ---
 
@@ -149,6 +150,7 @@ PlanProof AI supports three explicit AI operation modes controlled by the `AI_MO
 | `GET` | `/api/v1/events/{event_id}/crisis/recoveries/{recovery_id}` | Retrieve individual recovery record details and actions |
 | `PATCH` | `/api/v1/events/{event_id}/crisis/recoveries/{recovery_id}` | Update recovery record status or situation description |
 | `PATCH` | `/api/v1/events/{event_id}/crisis/recoveries/{recovery_id}/actions/{action_id}` | Update action item execution status or coordination notes |
+| `GET` | `/api/v1/events/{event_id}/readiness` | Deterministic event readiness assessment, category scores, and prioritized next actions |
 | `POST` | `/api/v1/validate-event` | Strict domain validation for event planning requests |
 | `POST` | `/api/v1/budget/calculate` | Deterministic 8-category budget allocation (Hamilton-Hare method) |
 | `POST` | `/api/v1/budget/rebalance` | Budget rebalancing with essential category preservation |
@@ -907,6 +909,155 @@ PlanProof AI currently operates on an **in-memory event store (`EventStore`)** f
 1. **Evaluate a Crisis**: Go to **Crisis Recovery Center (`#crisis`)**, choose a scenario (or custom disruption), and click **Run Crisis Recovery Drill**.
 2. **Save & Select Actions**: In the evaluation results, click **Save Plan & Track Actions**. A modal allows editing situation notes and selecting which recommended actions to track.
 3. **Track Execution**: Navigate to **Recovery History (`#recovery-history`)** to review all past crises for the active event. Click any record to inspect the complete saved plan, update action status dropdowns (`Pending` → `In Progress` → `Completed`), log contact notes, or adjust the overall recovery status.
+
+---
+
+## Event Readiness Score & Planning Progress
+
+PlanProof AI includes an authoritative, **deterministic Event Readiness Assessment Service** that answers key planning questions for hosts and planners:
+- *How prepared is my event overall?*
+- *Which specific planning domains require urgent attention?*
+- *What critical tasks or safety margins remain unaddressed?*
+- *What should I prioritize next?*
+
+### 1. What the Readiness Score Means
+
+The Event Readiness Score is a deterministic planning progress metric (bounded between **0 and 100**) reflecting actual documented task completion, financial safety buffers, milestone timeliness, vendor booking progression, and risk mitigations.
+- **Not a Black Box:** The score is calculated using transparent, published rules and category weights.
+- **Operational Guide, Not Guarantee:** The score does not claim statistical predictability or guarantee an error-free event. Rather, it surfaces objective planning readiness based on the host's actual event parameters.
+- **No Free Passes:** Missing event data never counts as success. For instance, an unscheduled event date prevents calendar deadlines and penalizes readiness.
+- **Non-Double Penalizing:** Core issues are scored in their respective domain without cascading duplicate deductions.
+
+### 2. Scoring Formula & Category Weights
+
+The overall score is a normalized weighted average of active, available categories:
+
+$$\text{Overall Score} = \text{round}\left(\sum_{c \in \text{available}} \frac{W_c}{\sum_{j} W_j} \times \text{Score}_c\right)$$
+
+| Category | Base Weight | Evaluation Criteria |
+| :--- | :--- | :--- |
+| **Planning Completeness** | `15%` | Presence of core parameters (`event_type`, `guest_count`, `total_budget_inr`), confirmed scheduled date (`event_date`), and location details (`city`, `event_name`). |
+| **Budget Readiness** | `25%` | Mathematical allocation integrity, non-negative categories, essential category funding (`venue > 0`, `catering > 0`), and emergency buffer health (`>= 5%` of total budget). |
+| **Timeline Readiness** | `20%` | Completion ratio of milestone schedule (`70%` base) and timeliness (`30%` punctuality, penalized by `-10` pts per overdue milestone). |
+| **Vendor Coordination** | `25%` | Booking progression across active checklist items (`completed`: `100%`, `booked`: `85%`, `contacted`/`in_progress`: `50%`, `researching`: `25%`, `not_started`: `0%`). |
+| **Risk Preparedness** | `15%` | Deductions for unmitigated pre-mortem failure modes: `-15` pts per critical risk (`priority_score >= 9`), `-8` pts per high risk (`6-8`), `-3` pts per medium risk. |
+| **Crisis Follow-up** | `15%` (when active) | Completion ratio of tracked crisis recovery actions across active incidents. |
+
+#### Dynamic Weight Normalization
+- If an event has never experienced an incident, `crisis_followup` is marked `is_available = False` with `score = None`.
+- **Zero-Penalty Exclusion:** Unavailable categories are excluded from scoring, and remaining available categories are dynamically normalized so their weights sum to exactly `100.0%`.
+
+### 3. Score Thresholds & Status Lifecycle
+
+| Score Range | Status | Meaning |
+| :--- | :--- | :--- |
+| `85 – 100` | `well_prepared` | Essential milestones completed, vendors booked, buffer funded (`>= 5%`), and risks mitigated. |
+| `65 – 84` | `in_progress` | Active planning underway with substantial tasks in motion; some milestones pending. |
+| `40 – 64` | `needs_attention` | Action required: missing safety buffer, overdue milestones, or unbooked core vendors. |
+| `< 40` | `not_started` | Early planning state; fundamental vendor outreach and timeline milestones not yet started. |
+| `None` | `insufficient_data` | Core parameters (`total_budget_inr <= 0`, invalid headcount, or missing budget) prevent score calculation. |
+
+### 4. Prioritized Next Actions & Deep Linking
+
+Every recommended next action is deduplicated and directly references a real, existing entity:
+- Real milestone identifier (`target_id: "M-WED-01"`) with direct CTA: `Open Timeline ➔`
+- Real vendor checklist task ID (`target_id: "VEND-WED-01"`) with direct CTA: `Open Vendors ➔`
+- Real pre-mortem risk ID (`target_id: "RISK-BUDGET-01"`) with direct CTA: `Open Risks ➔`
+- Direct CTA to rebalance emergency buffer: `Open Budget ➔`
+- Direct CTA to confirm missing event date: `Edit Event Details ➔`
+
+### 5. API Endpoint & Sample Response
+
+**Route:** `GET /api/v1/events/{event_id}/readiness`  
+**Query Parameters:** `reference_date` (optional ISO date string for time-simulated testing)
+
+#### Sample Response:
+```json
+{
+  "event_id": "EV-35D19DF60424",
+  "overall_score": 78,
+  "readiness_status": "in_progress",
+  "category_scores": [
+    {
+      "category": "planning_completeness",
+      "name": "Planning Completeness",
+      "score": 100,
+      "weight_percentage": 15.0,
+      "is_available": true,
+      "explanation": "All core event parameters, dates, and locations are confirmed.",
+      "supporting_counts": { "core_fields_present": 6, "missing_fields": 0 }
+    },
+    {
+      "category": "budget_readiness",
+      "name": "Budget Readiness",
+      "score": 100,
+      "weight_percentage": 25.0,
+      "is_available": true,
+      "explanation": "Budget accurately allocated to ₹2,500,000 with healthy ₹125,000 (5.0%) contingency buffer.",
+      "supporting_counts": { "total_budget_inr": 2500000, "buffer_inr": 125000, "buffer_percentage": 5.0 }
+    },
+    {
+      "category": "timeline_readiness",
+      "name": "Timeline Readiness",
+      "score": 58,
+      "weight_percentage": 20.0,
+      "is_available": true,
+      "explanation": "4/10 milestones completed (40%); 0 milestone(s) overdue.",
+      "supporting_counts": { "total_milestones": 10, "completed_milestones": 4, "overdue_milestones": 0, "pending_milestones": 6 }
+    },
+    {
+      "category": "vendor_coordination",
+      "name": "Vendor Coordination",
+      "score": 62,
+      "weight_percentage": 25.0,
+      "is_available": true,
+      "explanation": "3/9 vendors booked, 2 tasks completed.",
+      "supporting_counts": { "total_vendors": 9, "active_vendors": 9, "booked_vendors": 3, "completed_tasks": 2 }
+    },
+    {
+      "category": "risk_preparedness",
+      "name": "Risk Preparedness",
+      "score": 85,
+      "weight_percentage": 15.0,
+      "is_available": true,
+      "explanation": "0 critical risks; 1 high-priority risk(s) identified with preventive measures.",
+      "supporting_counts": { "total_risks": 4, "critical_risks": 0, "high_risks": 1, "medium_risks": 3 }
+    },
+    {
+      "category": "crisis_followup",
+      "name": "Crisis Follow-up",
+      "score": null,
+      "weight_percentage": 0.0,
+      "is_available": false,
+      "explanation": "No crisis recovery records saved for this event; crisis follow-up is not applicable.",
+      "supporting_counts": { "total_records": 0, "open_records": 0, "resolved_records": 0 }
+    }
+  ],
+  "completed_items": 7,
+  "outstanding_items": 13,
+  "critical_concerns": [],
+  "recommended_next_actions": [
+    {
+      "action_id": "ACT-TL-M-WED-05",
+      "title": "Execute Milestone: Finalize catering tasting & menu selection",
+      "description": "Upcoming milestone scheduled for 2027-04-15.",
+      "priority": "high",
+      "category": "timeline",
+      "target_id": "M-WED-05",
+      "target_view": "timeline"
+    }
+  ],
+  "missing_information": [],
+  "calculation_method": "Deterministic multi-category weighted average (Planning: 15%, Budget: 25%, Timeline: 20%, Vendors: 25%, Risks: 15%; dynamically normalized for available categories).",
+  "generated_at": "2026-10-23T20:00:00Z"
+}
+```
+
+### 6. Frontend Refresh Behavior
+
+- **Automatic Refresh:** The readiness score and diagnostic banner in Overview automatically re-fetch when an event is selected or when the user navigates to `#readiness`.
+- **Interactive Links:** Clicking any recommended next action navigates directly to the target planning view (`Timeline`, `Vendors`, `Budget`, `Risks`, or `Event Details`).
+- **State Invalidation:** When milestones are marked complete, vendors are edited, budgets are rebalanced, or crisis recovery actions are updated, readiness state is immediately refreshed.
 
 ---
 
