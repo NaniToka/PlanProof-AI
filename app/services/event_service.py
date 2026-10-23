@@ -51,6 +51,15 @@ from app.schemas import (
     validate_event_date,
     CrisisEvaluationRequest,
     EventCrisisRecoveryResponse,
+    CrisisRecoveryRecord,
+    RecoveryActionStatus,
+    RecoveryProgressSummary,
+    RecoveryRecordCreateRequest,
+    RecoveryRecordUpdateRequest,
+    RecoveryStatus,
+    TrackedActionInput,
+    TrackedActionUpdateRequest,
+    TrackedRecoveryAction,
 )
 from app.services.budget import (
     calculate_initial_budget,
@@ -1013,6 +1022,348 @@ class EventService:
             request=request,
             orchestrator=orchestrator,
         )
+
+    async def save_recovery_record(
+        self,
+        event_id: str,
+        request: RecoveryRecordCreateRequest,
+    ) -> CrisisRecoveryRecord | None:
+        """Save a validated recovery record from a generated plan and track selected actions.
+
+        Args:
+            event_id: Owning event profile identifier.
+            request: Validated recovery creation payload with recovery_plan and optional actions.
+
+        Returns:
+            Saved CrisisRecoveryRecord, or None if the owning event profile is not found.
+        """
+        profile = await self.get_event(event_id)
+        if profile is None:
+            return None
+
+        now = datetime.now(timezone.utc)
+        recovery_id = f"REC-{uuid4().hex[:8].upper()}"
+
+        # Build tracked actions list with stable identifiers
+        actions: list[TrackedRecoveryAction] = []
+        if request.actions is not None:
+            # User provided a custom or filtered list of actions
+            for idx, act_input in enumerate(request.actions, start=1):
+                act_id = act_input.action_id or f"ACT-{uuid4().hex[:8].upper()}"
+                actions.append(
+                    TrackedRecoveryAction(
+                        action_id=act_id,
+                        recovery_id=recovery_id,
+                        title=act_input.title,
+                        description=act_input.description,
+                        priority=act_input.priority,
+                        status=act_input.status,
+                        notes=act_input.notes,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
+        else:
+            # Default: extract all recommended actions from recovery plan
+            counter = 1
+            for item in request.recovery_plan.immediate_actions:
+                actions.append(
+                    TrackedRecoveryAction(
+                        action_id=f"ACT-{counter:02d}",
+                        recovery_id=recovery_id,
+                        title=item.title,
+                        description=item.action,
+                        priority=item.priority,
+                        status=RecoveryActionStatus.PENDING,
+                        notes=None,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
+                counter += 1
+
+            for item in request.recovery_plan.next_step_actions:
+                actions.append(
+                    TrackedRecoveryAction(
+                        action_id=f"ACT-{counter:02d}",
+                        recovery_id=recovery_id,
+                        title=item.title,
+                        description=item.action,
+                        priority=item.priority,
+                        status=RecoveryActionStatus.PENDING,
+                        notes=None,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
+                counter += 1
+
+        # Avoid marking a crisis resolved automatically merely because a recovery plan was generated
+        initial_status = request.status
+        if initial_status == RecoveryStatus.RESOLVED and any(
+            a.status != RecoveryActionStatus.COMPLETED for a in actions
+        ):
+            initial_status = RecoveryStatus.OPEN
+
+        record = CrisisRecoveryRecord(
+            recovery_id=recovery_id,
+            event_id=event_id,
+            crisis_type=request.crisis_type,
+            severity=request.severity,
+            description=request.description,
+            recovery_plan=request.recovery_plan,
+            source=request.source,
+            status=initial_status,
+            actions=actions,
+            created_at=now,
+            updated_at=now,
+        )
+
+        recalculate_recovery_progress(record, explicit_status=initial_status)
+
+        # Update event profile without mutating budget, timeline, or vendor checklist
+        new_records = list(profile.recovery_records)
+        new_records.append(record)
+
+        updated_profile = profile.model_copy(
+            update={
+                "recovery_records": new_records,
+                "updated_at": now,
+            }
+        )
+        await self.store.update(event_id, updated_profile)
+
+        logger.info(
+            "Saved recovery record %s for event %s (actions=%d, source=%s)",
+            recovery_id,
+            event_id,
+            len(actions),
+            request.source,
+        )
+        return record
+
+    async def list_recovery_records(
+        self,
+        event_id: str,
+        skip: int = 0,
+        limit: int = 50,
+    ) -> list[CrisisRecoveryRecord] | None:
+        """List historical recovery records for an event, sorted newest first."""
+        profile = await self.get_event(event_id)
+        if profile is None:
+            return None
+
+        # Sort newest first by created_at
+        sorted_records = sorted(
+            profile.recovery_records,
+            key=lambda r: r.created_at,
+            reverse=True,
+        )
+        return sorted_records[skip : skip + limit]
+
+    async def get_recovery_record(
+        self,
+        event_id: str,
+        recovery_id: str,
+    ) -> CrisisRecoveryRecord | None:
+        """Retrieve a specific recovery record belonging to the owning event."""
+        profile = await self.get_event(event_id)
+        if profile is None:
+            return None
+
+        for rec in profile.recovery_records:
+            if rec.recovery_id == recovery_id:
+                return rec
+        return None
+
+    async def update_recovery_record(
+        self,
+        event_id: str,
+        recovery_id: str,
+        request: RecoveryRecordUpdateRequest,
+    ) -> CrisisRecoveryRecord | None:
+        """Update supported recovery record fields (such as status and description)."""
+        profile = await self.get_event(event_id)
+        if profile is None:
+            return None
+
+        target_idx = -1
+        for idx, rec in enumerate(profile.recovery_records):
+            if rec.recovery_id == recovery_id:
+                target_idx = idx
+                break
+
+        if target_idx == -1:
+            return None
+
+        record = profile.recovery_records[target_idx]
+        now = datetime.now(timezone.utc)
+
+        new_desc = request.description if request.description is not None else record.description
+        new_status = request.status if request.status is not None else record.status
+
+        # Create updated record
+        updated_rec = record.model_copy(
+            update={
+                "description": new_desc,
+                "status": new_status,
+                "updated_at": now,
+            }
+        )
+
+        # Recalculate progress and retain or derive status
+        recalculate_recovery_progress(updated_rec, explicit_status=new_status)
+
+        new_records = list(profile.recovery_records)
+        new_records[target_idx] = updated_rec
+
+        updated_profile = profile.model_copy(
+            update={
+                "recovery_records": new_records,
+                "updated_at": now,
+            }
+        )
+        await self.store.update(event_id, updated_profile)
+
+        logger.info(
+            "Updated recovery record %s for event %s (status=%s)",
+            recovery_id,
+            event_id,
+            updated_rec.status.value,
+        )
+        return updated_rec
+
+    async def update_recovery_action(
+        self,
+        event_id: str,
+        recovery_id: str,
+        action_id: str,
+        request: TrackedActionUpdateRequest,
+    ) -> TrackedRecoveryAction | None:
+        """Update an action item's status and notes, recalculating parent progress counts."""
+        profile = await self.get_event(event_id)
+        if profile is None:
+            return None
+
+        target_rec_idx = -1
+        for idx, rec in enumerate(profile.recovery_records):
+            if rec.recovery_id == recovery_id:
+                target_rec_idx = idx
+                break
+
+        if target_rec_idx == -1:
+            return None
+
+        record = profile.recovery_records[target_rec_idx]
+
+        target_act_idx = -1
+        for idx, act in enumerate(record.actions):
+            if act.action_id == action_id:
+                target_act_idx = idx
+                break
+
+        if target_act_idx == -1:
+            return None
+
+        action = record.actions[target_act_idx]
+        now = datetime.now(timezone.utc)
+
+        new_status = request.status if request.status is not None else action.status
+        new_notes = request.notes if request.notes is not None else action.notes
+
+        updated_action = action.model_copy(
+            update={
+                "status": new_status,
+                "notes": new_notes,
+                "updated_at": now,
+            }
+        )
+
+        new_actions = list(record.actions)
+        new_actions[target_act_idx] = updated_action
+
+        # Update record with new actions and recalculate progress and derived overall status
+        updated_rec = record.model_copy(
+            update={
+                "actions": new_actions,
+                "updated_at": now,
+            }
+        )
+        recalculate_recovery_progress(updated_rec)
+
+        # Attach recalculated progress summary to the returned action
+        updated_action.progress = updated_rec.progress
+
+        new_records = list(profile.recovery_records)
+        new_records[target_rec_idx] = updated_rec
+
+        updated_profile = profile.model_copy(
+            update={
+                "recovery_records": new_records,
+                "updated_at": now,
+            }
+        )
+        await self.store.update(event_id, updated_profile)
+
+        logger.info(
+            "Updated action %s in recovery %s for event %s (action_status=%s, recovery_status=%s)",
+            action_id,
+            recovery_id,
+            event_id,
+            updated_action.status.value,
+            updated_rec.status.value,
+        )
+        return updated_action
+
+
+def recalculate_recovery_progress(
+    record: CrisisRecoveryRecord,
+    explicit_status: RecoveryStatus | None = None,
+) -> None:
+    """Recalculate action progress counts, completion percentage, and derive overall recovery status.
+
+    Documented rules:
+    - total_actions = len(record.actions)
+    - pending_actions = count of actions where status is PENDING
+    - in_progress_actions = count of actions where status is IN_PROGRESS
+    - completed_actions = count of actions where status is COMPLETED
+    - completion_percentage = round((completed / total) * 100.0, 1) if total > 0 else 0.0
+
+    Overall Status Rules:
+    - If explicit_status is specified, the record status is updated to explicit_status.
+    - Otherwise, status is automatically derived:
+      - If total_actions > 0 and completed_actions == total_actions: status is RESOLVED.
+      - If total_actions > 0 and (completed_actions > 0 or in_progress_actions > 0): status is IN_PROGRESS.
+      - If total_actions > 0 and all actions are pending: status is OPEN.
+      - If total_actions == 0: status is unchanged.
+    - Automatic resolution is NEVER applied while any action remains incomplete (pending or in_progress).
+    """
+    total = len(record.actions)
+    pending = sum(1 for a in record.actions if a.status == RecoveryActionStatus.PENDING)
+    in_progress = sum(1 for a in record.actions if a.status == RecoveryActionStatus.IN_PROGRESS)
+    completed = sum(1 for a in record.actions if a.status == RecoveryActionStatus.COMPLETED)
+    pct = round((completed / total) * 100.0, 1) if total > 0 else 0.0
+
+    record.progress = RecoveryProgressSummary(
+        total_actions=total,
+        pending_actions=pending,
+        in_progress_actions=in_progress,
+        completed_actions=completed,
+        completion_percentage=pct,
+    )
+    record.total_actions = total
+    record.completed_actions = completed
+
+    if explicit_status is not None:
+        record.status = explicit_status
+    elif total > 0:
+        if completed == total:
+            record.status = RecoveryStatus.RESOLVED
+        elif completed > 0 or in_progress > 0:
+            record.status = RecoveryStatus.IN_PROGRESS
+        else:
+            record.status = RecoveryStatus.OPEN
+
 
 
 

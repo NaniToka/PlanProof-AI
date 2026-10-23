@@ -28,6 +28,10 @@ const state = {
   crisisTypes: [],
   crisisResult: null,
   crisisSeverity: 2,
+  recoveryRecords: [],
+  selectedRecoveryId: null,
+  selectedRecovery: null,
+  isLoadingRecoveries: false,
 };
 
 // ==============================================================================
@@ -157,6 +161,35 @@ const API = {
   evaluateCrisis(eventId, payload) {
     return this.request(`/api/v1/events/${encodeURIComponent(eventId)}/crisis/evaluate`, {
       method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
+
+  saveRecoveryRecord(eventId, payload) {
+    return this.request(`/api/v1/events/${encodeURIComponent(eventId)}/crisis/recoveries`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
+
+  getRecoveryRecords(eventId) {
+    return this.request(`/api/v1/events/${encodeURIComponent(eventId)}/crisis/recoveries`);
+  },
+
+  getRecoveryRecord(eventId, recoveryId) {
+    return this.request(`/api/v1/events/${encodeURIComponent(eventId)}/crisis/recoveries/${encodeURIComponent(recoveryId)}`);
+  },
+
+  updateRecoveryRecord(eventId, recoveryId, payload) {
+    return this.request(`/api/v1/events/${encodeURIComponent(eventId)}/crisis/recoveries/${encodeURIComponent(recoveryId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    });
+  },
+
+  updateRecoveryAction(eventId, recoveryId, actionId, payload) {
+    return this.request(`/api/v1/events/${encodeURIComponent(eventId)}/crisis/recoveries/${encodeURIComponent(recoveryId)}/actions/${encodeURIComponent(actionId)}`, {
+      method: 'PATCH',
       body: JSON.stringify(payload),
     });
   },
@@ -1513,9 +1546,14 @@ async function renderCrisis() {
               · Event Phase: <strong>${escapeHTML(d.event_phase.replace('_', ' ').toUpperCase())}</strong>
             </div>
           </div>
-          <button class="btn btn-secondary btn-sm" onclick="resetCrisisEvaluation()">
-            🔄 Evaluate New Scenario
-          </button>
+          <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+            <button class="btn btn-cyan btn-sm" id="btn-save-crisis-recovery" onclick="openSaveRecoveryModal()">
+              💾 Save Plan & Track Actions
+            </button>
+            <button class="btn btn-secondary btn-sm" onclick="resetCrisisEvaluation()">
+              🔄 Evaluate New Scenario
+            </button>
+          </div>
         </div>
 
         ${isP1Safety ? `
@@ -1819,6 +1857,621 @@ async function renderCrisis() {
 }
 
 // ==============================================================================
+// 5.10 Crisis Recovery History & Action Tracker View
+// ==============================================================================
+
+function getCrisisIcon(type) {
+  const map = {
+    rain: '🌧️',
+    power_cut: '⚡',
+    caterer_cancel: '🍽️',
+    caterer_late: '⏳',
+    venue_double_booked: '🏛️',
+    photographer_noshow: '📸',
+    sound_failure: '🔊',
+    decorator_delay: '🌸',
+    medical_emergency: '🚑',
+    police_licensing_issue: '👮',
+    transport_breakdown: '🚌',
+    fire_kitchen_hazard: '🔥',
+    guest_surge: '👥',
+    guest_dropout: '📉',
+    budget_overrun: '💸',
+  };
+  return map[type] || '🚨';
+}
+
+function openSaveRecoveryModal() {
+  if (!state.crisisResult || !state.crisisResult.data) {
+    showToast('No crisis evaluation result available to save.', 'warning');
+    return;
+  }
+  const d = state.crisisResult.data;
+  const actionsListEl = document.getElementById('save-recovery-actions-list');
+  const descInput = document.getElementById('save-recovery-desc');
+
+  if (descInput) {
+    descInput.value = d.crisis_summary || '';
+  }
+
+  const allActions = [
+    ...(d.immediate_actions || []),
+    ...(d.next_step_actions || []),
+  ];
+
+  if (actionsListEl) {
+    if (allActions.length === 0) {
+      actionsListEl.innerHTML = '<div style="font-size: 0.85rem; color: var(--text-muted); padding: 0.5rem;">No actions recommended in this plan.</div>';
+    } else {
+      actionsListEl.innerHTML = allActions.map((act, idx) => `
+        <div class="action-select-item">
+          <input type="checkbox" id="check-act-${idx}" class="recovery-action-check" data-idx="${idx}" checked>
+          <label for="check-act-${idx}" class="action-select-label">
+            <div class="action-select-title">
+              <span class="badge ${act.priority === 1 ? 'badge-danger' : 'badge-warning'}" style="font-size: 0.7rem; padding: 0.1rem 0.35rem; margin-right: 0.35rem;">P${act.priority}</span>
+              ${escapeHTML(act.title)}
+            </div>
+            <div class="action-select-desc">${escapeHTML(act.action)}</div>
+          </label>
+        </div>
+      `).join('');
+    }
+  }
+
+  const modal = document.getElementById('modal-save-recovery');
+  if (modal) modal.classList.add('open');
+}
+
+function closeSaveRecoveryModal() {
+  const modal = document.getElementById('modal-save-recovery');
+  if (modal) modal.classList.remove('open');
+}
+
+async function handleSaveRecoverySubmit(evt) {
+  evt.preventDefault();
+  if (!state.currentEventId) {
+    showToast('Please select an active event first.', 'error');
+    return;
+  }
+  if (!state.crisisResult || !state.crisisResult.data) {
+    showToast('No active crisis plan found.', 'error');
+    return;
+  }
+
+  const d = state.crisisResult.data;
+  const desc = document.getElementById('save-recovery-desc')?.value?.trim() || d.crisis_summary;
+  const allActions = [
+    ...(d.immediate_actions || []),
+    ...(d.next_step_actions || []),
+  ];
+
+  const selected = [];
+  document.querySelectorAll('.recovery-action-check:checked').forEach(cb => {
+    const idx = parseInt(cb.dataset.idx, 10);
+    if (!isNaN(idx) && allActions[idx]) {
+      const act = allActions[idx];
+      selected.push({
+        title: act.title,
+        description: act.action,
+        priority: act.priority || 2,
+        status: 'pending',
+      });
+    }
+  });
+
+  const payload = {
+    crisis_type: d.matched_scenario ? d.matched_scenario.crisis_type : 'rain',
+    severity: d.severity,
+    description: desc,
+    recovery_plan: d,
+    source: state.crisisResult.source || 'rules',
+    status: 'open',
+    actions: selected.length > 0 ? selected : undefined,
+  };
+
+  const btn = document.getElementById('btn-confirm-save-recovery');
+  if (btn) btn.disabled = true;
+
+  try {
+    const saved = await API.saveRecoveryRecord(state.currentEventId, payload);
+    closeSaveRecoveryModal();
+    showToast('Recovery plan saved to history! Tracking initialized.', 'success');
+    state.selectedRecoveryId = saved.recovery_id;
+    state.selectedRecovery = saved;
+    window.location.hash = 'recovery-history';
+    switchView('recovery-history');
+  } catch (err) {
+    console.error('Failed to save recovery record:', err);
+    showToast(err.message || 'Failed to save recovery record', 'error');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+function selectRecoveryRecord(recId) {
+  state.selectedRecoveryId = recId;
+  state.selectedRecovery = null;
+  renderRecoveryHistory();
+}
+
+async function handleRecoveryStatusChange(recoveryId, newStatus) {
+  try {
+    const updated = await API.updateRecoveryRecord(state.currentEventId, recoveryId, { status: newStatus });
+    showToast(`Recovery status updated to ${newStatus.replace('_', ' ')}.`, 'success');
+    state.selectedRecovery = updated;
+    renderRecoveryHistory();
+  } catch (err) {
+    console.error('Failed to update recovery status:', err);
+    showToast(err.message || 'Failed to update recovery status', 'error');
+  }
+}
+
+async function handleActionStatusChange(recoveryId, actionId, newStatus) {
+  try {
+    await API.updateRecoveryAction(state.currentEventId, recoveryId, actionId, { status: newStatus });
+    showToast(`Action updated to ${newStatus.replace('_', ' ')}.`, 'success');
+    renderRecoveryHistory();
+  } catch (err) {
+    console.error('Failed to update action status:', err);
+    showToast(err.message || 'Failed to update action status', 'error');
+  }
+}
+
+async function handleActionNotesSave(recoveryId, actionId) {
+  const input = document.getElementById(`action-notes-${actionId}`);
+  const notesVal = input ? input.value.trim() : null;
+
+  try {
+    await API.updateRecoveryAction(state.currentEventId, recoveryId, actionId, { notes: notesVal });
+    showToast('Action notes updated successfully.', 'success');
+    renderRecoveryHistory();
+  } catch (err) {
+    console.error('Failed to save action notes:', err);
+    showToast(err.message || 'Failed to save action notes', 'error');
+  }
+}
+
+async function renderRecoveryHistory() {
+  const container = document.getElementById('recovery-history-content');
+  if (!container) return;
+
+  const ev = state.currentEvent;
+  if (!state.currentEventId || !ev) {
+    container.innerHTML = `
+      <div class="empty-state">
+        <div class="empty-icon">📜</div>
+        <h2 class="empty-title">No Active Event Selected</h2>
+        <p class="empty-desc">Select an event from the top dropdown or create a new event to view recovery history and track actions.</p>
+        <button class="btn btn-cyan btn-sm" onclick="openCreateEventModal()">+ Create New Event</button>
+      </div>
+    `;
+    return;
+  }
+
+  // 1. Detail View: If a specific recovery record is selected
+  if (state.selectedRecoveryId) {
+    container.innerHTML = `
+      <div class="view-header">
+        <div>
+          <button class="btn btn-secondary btn-sm" onclick="selectRecoveryRecord(null)" style="margin-bottom: 0.75rem;">
+            ← Back to All Recovery Records
+          </button>
+          <h1 class="view-title">Loading Recovery Record...</h1>
+        </div>
+      </div>
+      <div class="loading-state"><div class="spinner"></div></div>
+    `;
+
+    try {
+      const record = await API.getRecoveryRecord(state.currentEventId, state.selectedRecoveryId);
+      state.selectedRecovery = record;
+      renderRecoveryDetailView(container, record);
+    } catch (err) {
+      console.error('Failed to load recovery record:', err);
+      container.innerHTML = `
+        <div class="view-header">
+          <button class="btn btn-secondary btn-sm" onclick="selectRecoveryRecord(null)" style="margin-bottom: 0.75rem;">
+            ← Back to All Recovery Records
+          </button>
+        </div>
+        <div class="empty-state">
+          <div class="empty-icon">⚠️</div>
+          <h2 class="empty-title">Error Loading Recovery Record</h2>
+          <p class="empty-desc">${escapeHTML(err.message || 'The requested recovery record could not be loaded.')}</p>
+          <button class="btn btn-secondary btn-sm" onclick="selectRecoveryRecord('${escapeHTML(state.selectedRecoveryId)}')">Retry</button>
+        </div>
+      `;
+    }
+    return;
+  }
+
+  // 2. List View: Fetch all recovery records for the active event
+  container.innerHTML = `
+    <div class="view-header">
+      <div>
+        <h1 class="view-title" id="recovery-history-heading">📜 Crisis Recovery History & Action Tracker</h1>
+        <p class="view-subtitle">Review previously evaluated crisis responses, track action item completion, and monitor resolution progress.</p>
+      </div>
+      <div class="header-actions">
+        <button class="btn btn-cyan btn-sm" onclick="switchView('crisis')">
+          🚨 Evaluate New Crisis
+        </button>
+      </div>
+    </div>
+    <div class="loading-state"><div class="spinner"></div></div>
+  `;
+
+  try {
+    const records = await API.getRecoveryRecords(state.currentEventId);
+    state.recoveryRecords = records || [];
+    renderRecoveryListView(container, state.recoveryRecords);
+  } catch (err) {
+    console.error('Failed to list recovery records:', err);
+    container.innerHTML = `
+      <div class="view-header">
+        <div>
+          <h1 class="view-title" id="recovery-history-heading">📜 Crisis Recovery History & Action Tracker</h1>
+          <p class="view-subtitle">Review previously evaluated crisis responses, track action item completion, and monitor resolution progress.</p>
+        </div>
+      </div>
+      <div class="empty-state">
+        <div class="empty-icon">⚠️</div>
+        <h2 class="empty-title">Failed to Load Recovery History</h2>
+        <p class="empty-desc">${escapeHTML(err.message || 'Unable to retrieve recovery history from server.')}</p>
+        <button class="btn btn-cyan btn-sm" onclick="renderRecoveryHistory()">Retry</button>
+      </div>
+    `;
+  }
+}
+
+function renderRecoveryListView(container, records) {
+  if (!records || records.length === 0) {
+    container.innerHTML = `
+      <div class="view-header">
+        <div>
+          <h1 class="view-title" id="recovery-history-heading">📜 Crisis Recovery History & Action Tracker</h1>
+          <p class="view-subtitle">Review previously evaluated crisis responses, track action item completion, and monitor resolution progress.</p>
+        </div>
+        <div class="header-actions">
+          <button class="btn btn-cyan btn-sm" onclick="switchView('crisis')">
+            🚨 Evaluate New Crisis
+          </button>
+        </div>
+      </div>
+
+      <div class="empty-state" style="background: var(--bg-surface-2); border: 1px solid var(--amethyst-border); border-radius: var(--radius-lg); padding: 3rem 1.5rem;">
+        <div class="empty-icon" style="font-size: 3rem; margin-bottom: 1rem;">🛡️</div>
+        <h2 class="empty-title" style="font-size: 1.25rem; font-weight: 800; color: var(--text-primary); margin-bottom: 0.5rem;">No Crisis Recovery Records Saved</h2>
+        <p class="empty-desc" style="max-width: 520px; margin: 0 auto 1.5rem; color: var(--text-secondary); line-height: 1.6;">
+          When unexpected disruptions occur, evaluate them in the <strong>Crisis Recovery Center</strong> and click <em>"Save Plan & Track Actions"</em> to track actionable mitigation steps here.
+        </p>
+        <button class="btn btn-cyan" onclick="switchView('crisis')">
+          🚨 Open Crisis Recovery Center
+        </button>
+      </div>
+    `;
+    return;
+  }
+
+  const totalRecs = records.length;
+  const resolvedCount = records.filter(r => r.status === 'resolved').length;
+  const inProgressCount = records.filter(r => r.status === 'in_progress').length;
+  const openCount = records.filter(r => r.status === 'open').length;
+
+  container.innerHTML = `
+    <div class="view-header">
+      <div>
+        <h1 class="view-title" id="recovery-history-heading">📜 Crisis Recovery History & Action Tracker</h1>
+        <p class="view-subtitle">Review previously evaluated crisis responses, track action item completion, and monitor resolution progress.</p>
+      </div>
+      <div class="header-actions">
+        <button class="btn btn-cyan btn-sm" onclick="switchView('crisis')">
+          🚨 Evaluate New Crisis
+        </button>
+      </div>
+    </div>
+
+    <!-- Summary Metrics -->
+    <div class="recovery-summary-metrics">
+      <div class="recovery-metric-box">
+        <div class="recovery-metric-val" style="color: var(--electric-cyan);">${totalRecs}</div>
+        <div class="recovery-metric-label">Total Records</div>
+      </div>
+      <div class="recovery-metric-box">
+        <div class="recovery-metric-val" style="color: #F59E0B;">${openCount}</div>
+        <div class="recovery-metric-label">Open</div>
+      </div>
+      <div class="recovery-metric-box">
+        <div class="recovery-metric-val" style="color: #00E5FF;">${inProgressCount}</div>
+        <div class="recovery-metric-label">In Progress</div>
+      </div>
+      <div class="recovery-metric-box">
+        <div class="recovery-metric-val" style="color: #10B981;">${resolvedCount}</div>
+        <div class="recovery-metric-label">Resolved</div>
+      </div>
+    </div>
+
+    <!-- Records List -->
+    <div class="recovery-list-grid">
+      ${records.map(rec => {
+        const typeObj = (state.crisisTypes || []).find(t => t.crisis_type === rec.crisis_type);
+        const typeTitle = typeObj ? typeObj.title : rec.crisis_type.replace(/_/g, ' ').toUpperCase();
+        const icon = getCrisisIcon(rec.crisis_type);
+        const createdDate = new Date(rec.created_at).toLocaleString('en-IN', {
+          dateStyle: 'medium',
+          timeStyle: 'short',
+        });
+        const statusClass = rec.status === 'resolved' ? 'resolved' : rec.status === 'in_progress' ? 'in_progress' : 'open';
+        const statusLabel = rec.status === 'resolved' ? '✓ Resolved' : rec.status === 'in_progress' ? '⚡ In Progress' : '● Open';
+        const prog = rec.progress || { completion_percentage: 0, completed_actions: 0, total_actions: 0 };
+        const sevClass = rec.severity === 3 ? 'badge-danger' : rec.severity === 2 ? 'badge-warning' : 'badge-cyan';
+        const sevLabel = rec.severity === 3 ? 'Severity 3: Critical' : rec.severity === 2 ? 'Severity 2: Moderate' : 'Severity 1: Minor';
+
+        return `
+          <div class="recovery-card" id="recovery-card-${escapeHTML(rec.recovery_id)}">
+            <div class="recovery-card-header">
+              <div style="display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap;">
+                <span style="font-size: 1.5rem;">${icon}</span>
+                <div>
+                  <h3 style="font-size: 1.15rem; font-weight: 800; color: var(--text-primary); margin-bottom: 0.2rem;">
+                    ${escapeHTML(typeTitle)}
+                  </h3>
+                  <div style="font-size: 0.8rem; color: var(--text-muted);">
+                    ID: <strong style="font-family: var(--font-mono); color: var(--text-secondary);">${escapeHTML(rec.recovery_id)}</strong>
+                    · Evaluated: ${createdDate}
+                  </div>
+                </div>
+              </div>
+
+              <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
+                <span class="badge ${sevClass}">${sevLabel}</span>
+                <span class="recovery-status-pill ${statusClass}">${statusLabel}</span>
+                <span class="dataset-provenance-pill" style="font-size: 0.7rem;">source: ${escapeHTML(rec.source)}</span>
+              </div>
+            </div>
+
+            ${rec.description ? `
+              <div style="font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 1rem; line-height: 1.5;">
+                ${escapeHTML(rec.description)}
+              </div>
+            ` : ''}
+
+            <!-- Progress Bar -->
+            <div style="background: rgba(0, 0, 0, 0.3); border: 1px solid rgba(255, 255, 255, 0.06); border-radius: var(--radius-md); padding: 0.85rem; margin-bottom: 1rem;">
+              <div style="display: flex; justify-content: space-between; align-items: center; font-size: 0.8rem; color: var(--text-muted); margin-bottom: 0.4rem;">
+                <span>Action Progress</span>
+                <strong style="color: var(--electric-cyan); font-family: var(--font-mono);">${prog.completed_actions} of ${prog.total_actions} Completed (${prog.completion_percentage}%)</strong>
+              </div>
+              <div class="recovery-progress-bar-wrap">
+                <div class="recovery-progress-bar-fill" style="width: ${prog.completion_percentage}%;"></div>
+              </div>
+            </div>
+
+            <div style="display: flex; justify-content: flex-end;">
+              <button class="btn btn-cyan btn-sm" onclick="selectRecoveryRecord('${escapeHTML(rec.recovery_id)}')">
+                <span>View Plan & Track Actions →</span>
+              </button>
+            </div>
+          </div>
+        `;
+      }).join('')}
+    </div>
+  `;
+}
+
+function renderRecoveryDetailView(container, record) {
+  const typeObj = (state.crisisTypes || []).find(t => t.crisis_type === record.crisis_type);
+  const typeTitle = typeObj ? typeObj.title : record.crisis_type.replace(/_/g, ' ').toUpperCase();
+  const icon = getCrisisIcon(record.crisis_type);
+  const createdDate = new Date(record.created_at).toLocaleString('en-IN', {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  });
+  const updatedDate = new Date(record.updated_at).toLocaleString('en-IN', {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  });
+  const prog = record.progress || {
+    total_actions: 0,
+    pending_actions: 0,
+    in_progress_actions: 0,
+    completed_actions: 0,
+    completion_percentage: 0,
+  };
+  const plan = record.recovery_plan || {};
+
+  container.innerHTML = `
+    <div class="view-header" style="margin-bottom: 1.25rem;">
+      <div>
+        <button class="btn btn-secondary btn-sm" onclick="selectRecoveryRecord(null)" style="margin-bottom: 0.75rem;">
+          ← Back to All Recovery Records
+        </button>
+        <div style="display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap;">
+          <span style="font-size: 2rem;">${icon}</span>
+          <div>
+            <h1 class="view-title" style="margin-bottom: 0.25rem;">
+              ${escapeHTML(typeTitle)} — Recovery Record
+            </h1>
+            <div style="font-size: 0.85rem; color: var(--text-muted);">
+              ID: <strong style="font-family: var(--font-mono); color: var(--electric-cyan);">${escapeHTML(record.recovery_id)}</strong>
+              · Created: ${createdDate} · Last Updated: ${updatedDate}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Overall Status Control -->
+      <div style="display: flex; align-items: center; gap: 0.75rem; background: var(--bg-surface-2); padding: 0.75rem 1rem; border-radius: var(--radius-md); border: 1px solid var(--amethyst-border);">
+        <label for="recovery-overall-status-select" style="font-size: 0.8rem; font-weight: 700; color: var(--text-secondary); text-transform: uppercase;">
+          Overall Status:
+        </label>
+        <select id="recovery-overall-status-select" class="form-select form-select-sm" style="width: auto; font-weight: 700;" onchange="handleRecoveryStatusChange('${escapeHTML(record.recovery_id)}', this.value)">
+          <option value="open" ${record.status === 'open' ? 'selected' : ''}>● Open</option>
+          <option value="in_progress" ${record.status === 'in_progress' ? 'selected' : ''}>⚡ In Progress</option>
+          <option value="resolved" ${record.status === 'resolved' ? 'selected' : ''}>✓ Resolved</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Progress Summary Card -->
+    <div class="card" style="margin-bottom: 1.5rem; background: var(--bg-surface-2); border: 1px solid var(--amethyst-border);">
+      <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
+        <h3 class="card-title" style="color: var(--electric-cyan);">📊 Recovery Progress & Action Tracker</h3>
+        <span class="badge ${record.severity === 3 ? 'badge-danger' : record.severity === 2 ? 'badge-warning' : 'badge-cyan'}">
+          Severity ${record.severity}
+        </span>
+      </div>
+
+      <div class="recovery-summary-metrics" style="margin-bottom: 1rem;">
+        <div class="recovery-metric-box">
+          <div class="recovery-metric-val" style="color: var(--text-primary);">${prog.total_actions}</div>
+          <div class="recovery-metric-label">Total Actions</div>
+        </div>
+        <div class="recovery-metric-box">
+          <div class="recovery-metric-val" style="color: #F59E0B;">${prog.pending_actions}</div>
+          <div class="recovery-metric-label">Pending</div>
+        </div>
+        <div class="recovery-metric-box">
+          <div class="recovery-metric-val" style="color: #00E5FF;">${prog.in_progress_actions}</div>
+          <div class="recovery-metric-label">In Progress</div>
+        </div>
+        <div class="recovery-metric-box">
+          <div class="recovery-metric-val" style="color: #10B981;">${prog.completed_actions}</div>
+          <div class="recovery-metric-label">Completed</div>
+        </div>
+      </div>
+
+      <div>
+        <div style="display: flex; justify-content: space-between; font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 0.35rem;">
+          <span>Action Completion</span>
+          <strong style="color: var(--electric-cyan); font-family: var(--font-mono);">${prog.completion_percentage}% Completed</strong>
+        </div>
+        <div class="recovery-progress-bar-wrap" style="height: 10px;">
+          <div class="recovery-progress-bar-fill" style="width: ${prog.completion_percentage}%;"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tracked Actions List -->
+    <div class="card" style="margin-bottom: 1.5rem;">
+      <div class="card-header">
+        <h3 class="card-title">📋 Tracked Action Items (${record.actions ? record.actions.length : 0})</h3>
+      </div>
+
+      <div class="recovery-actions-list">
+        ${(!record.actions || record.actions.length === 0) ? `
+          <div class="empty-state" style="padding: 2rem 1rem;">
+            <p class="empty-desc">No actions are currently being tracked for this recovery record.</p>
+          </div>
+        ` : record.actions.map(act => {
+          const pClass = act.priority === 1 ? 'recovery-priority-1' : act.priority === 2 ? 'recovery-priority-2' : 'recovery-priority-3';
+          const pLabel = act.priority === 1 ? 'P1: Urgent' : act.priority === 2 ? 'P2: Operational' : 'P3: Follow-up';
+          const cardStatusClass = act.status === 'completed' ? 'status-completed' : '';
+
+          return `
+            <div class="recovery-action-card ${cardStatusClass}" id="action-card-${escapeHTML(act.action_id)}">
+              <div class="recovery-action-top">
+                <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
+                  <span class="recovery-priority-badge ${pClass}">${pLabel}</span>
+                  <span style="font-family: var(--font-mono); font-size: 0.8rem; color: var(--text-dim);">${escapeHTML(act.action_id)}</span>
+                  <h4 style="font-size: 1rem; font-weight: 700; color: var(--text-primary); margin: 0;">
+                    ${escapeHTML(act.title)}
+                  </h4>
+                </div>
+
+                <!-- Status Selector -->
+                <div style="display: flex; align-items: center; gap: 0.5rem;">
+                  <label for="action-status-${escapeHTML(act.action_id)}" class="sr-only">Status</label>
+                  <select id="action-status-${escapeHTML(act.action_id)}" class="form-select form-select-sm" style="font-weight: 700; min-width: 130px;" onchange="handleActionStatusChange('${escapeHTML(record.recovery_id)}', '${escapeHTML(act.action_id)}', this.value)">
+                    <option value="pending" ${act.status === 'pending' ? 'selected' : ''}>● Pending</option>
+                    <option value="in_progress" ${act.status === 'in_progress' ? 'selected' : ''}>⚡ In Progress</option>
+                    <option value="completed" ${act.status === 'completed' ? 'selected' : ''}>✓ Completed</option>
+                  </select>
+                </div>
+              </div>
+
+              <div style="font-size: 0.88rem; color: var(--text-secondary); line-height: 1.5; margin-bottom: 0.75rem;">
+                ${escapeHTML(act.description)}
+              </div>
+
+              <!-- Notes Input Row -->
+              <div class="recovery-notes-row">
+                <span style="font-size: 0.8rem; color: var(--text-muted); white-space: nowrap;">Notes:</span>
+                <input type="text" class="recovery-notes-input" id="action-notes-${escapeHTML(act.action_id)}" value="${escapeHTML(act.notes || '')}" placeholder="Add coordinator notes or vendor updates..." maxlength="1000">
+                <button type="button" class="btn btn-secondary btn-sm" onclick="handleActionNotesSave('${escapeHTML(record.recovery_id)}', '${escapeHTML(act.action_id)}')">
+                  Save Note
+                </button>
+              </div>
+            </div>
+          `;
+        }).join('')}
+      </div>
+    </div>
+
+    <!-- Saved Recovery Plan Reference -->
+    ${plan.crisis_summary ? `
+      <div class="card" style="margin-bottom: 1.5rem;">
+        <div class="card-header">
+          <h3 class="card-title">📖 Saved Recovery Plan Reference</h3>
+        </div>
+
+        <div style="margin-bottom: 1rem;">
+          <h4 style="font-size: 0.95rem; font-weight: 700; color: var(--text-primary); margin-bottom: 0.35rem;">
+            Root Cause & Operational Summary
+          </h4>
+          <p style="font-size: 0.88rem; color: var(--text-secondary); line-height: 1.5;">
+            ${escapeHTML(plan.crisis_summary)}
+          </p>
+        </div>
+
+        ${plan.budget_impact ? `
+          <div style="background: var(--bg-surface-1); border: 1px solid var(--amethyst-border); border-radius: var(--radius-md); padding: 1rem; margin-bottom: 1rem;">
+            <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.5rem;">
+              <strong style="color: var(--electric-cyan);">Financial Impact Assessment</strong>
+              <span class="badge ${plan.budget_impact.buffer_sufficient ? 'badge-cyan' : 'badge-danger'}">
+                ${plan.budget_impact.buffer_sufficient ? 'Buffer Sufficient' : 'Buffer Deficit'}
+              </span>
+            </div>
+            <div style="font-size: 0.85rem; color: var(--text-secondary); line-height: 1.5;">
+              Estimated Cost Impact: <strong>₹${Number(plan.budget_impact.estimated_rupee_impact || 0).toLocaleString('en-IN')}</strong> (${plan.budget_impact.cost_impact_pct}%) · 
+              Existing Contingency Buffer: <strong>₹${Number(plan.budget_impact.existing_buffer_inr || 0).toLocaleString('en-IN')}</strong>
+            </div>
+            <div style="font-size: 0.82rem; color: var(--text-muted); margin-top: 0.35rem;">
+              ${escapeHTML(plan.budget_impact.advice || '')}
+            </div>
+          </div>
+        ` : ''}
+
+        ${plan.communication_drafts && plan.communication_drafts.length > 0 ? `
+          <div>
+            <h4 style="font-size: 0.95rem; font-weight: 700; color: var(--text-primary); margin-bottom: 0.5rem;">
+              Stakeholder Communication Drafts (${plan.communication_drafts.length})
+            </h4>
+            <div class="grid-2">
+              ${plan.communication_drafts.map((draft, idx) => `
+                <div class="crisis-draft-card">
+                  <div class="crisis-draft-header">
+                    <span class="crisis-draft-role">${escapeHTML(draft.recipient_role)}</span>
+                    <span style="font-size: 0.75rem; color: var(--text-muted);">${escapeHTML(draft.recipient_label)}</span>
+                  </div>
+                  <div style="font-size: 0.82rem; font-weight: 700; color: var(--text-primary); margin-bottom: 0.5rem;">
+                    ${escapeHTML(draft.subject_or_header)}
+                  </div>
+                  <div class="crisis-draft-text-box" id="history-draft-text-${idx}">${highlightPlaceholders(draft.message_text)}</div>
+                  <button type="button" class="btn-copy-draft" onclick="copyCrisisDraft('history-draft-text-${idx}', this)">
+                    📋 Copy Broadcast Message
+                  </button>
+                </div>
+              `).join('')}
+            </div>
+          </div>
+        ` : ''}
+      </div>
+    ` : ''}
+  `;
+}
+
+// ==============================================================================
 // 6. Navigation & Routing
 // ==============================================================================
 
@@ -1867,6 +2520,9 @@ function switchView(viewName) {
     case 'crisis':
       renderCrisis();
       break;
+    case 'recovery-history':
+      renderRecoveryHistory();
+      break;
     default:
       renderOverview();
   }
@@ -1887,6 +2543,8 @@ function updateActiveEventBadge(profile) {
 
 async function selectEvent(eventId) {
   state.currentEventId = eventId;
+  state.selectedRecoveryId = null;
+  state.selectedRecovery = null;
   try {
     sessionStorage.setItem('planproof_active_event_id', eventId);
   } catch (err) {
@@ -1904,6 +2562,7 @@ async function selectEvent(eventId) {
     showToast(`Failed to select event ${eventId}`, 'error');
   }
 }
+
 
 async function loadEventsList() {
   const select = document.getElementById('event-select-dropdown');
@@ -2082,7 +2741,18 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   });
 
-  // 8. Bootstrap Initial State
+  // 8. Save Recovery Plan Modal Triggers
+  document.getElementById('btn-close-save-recovery-modal')?.addEventListener('click', closeSaveRecoveryModal);
+  document.getElementById('btn-cancel-save-recovery')?.addEventListener('click', closeSaveRecoveryModal);
+  document.getElementById('btn-select-all-actions')?.addEventListener('click', () => {
+    document.querySelectorAll('.recovery-action-check').forEach(cb => { cb.checked = true; });
+  });
+  document.getElementById('btn-deselect-all-actions')?.addEventListener('click', () => {
+    document.querySelectorAll('.recovery-action-check').forEach(cb => { cb.checked = false; });
+  });
+  document.getElementById('form-save-recovery')?.addEventListener('submit', handleSaveRecoverySubmit);
+
+  // 9. Bootstrap Initial State
   await loadSystemStatus();
   await loadEventsList();
 

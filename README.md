@@ -96,7 +96,7 @@ Open [http://localhost:8000](http://localhost:8000) in your browser to view the 
 
 ### Interactive Planning Console Navigation
 
-The web frontend at `http://localhost:8000` is an interactive planning console styled in **Jet Black (`#050505`)**, **Royal Amethyst (`#3B0A6B`)**, and **Electric Cyan (`#00E5FF`)**. It connects directly to the backend APIs across eight views:
+The web frontend at `http://localhost:8000` is an interactive planning console styled in **Jet Black (`#050505`)**, **Royal Amethyst (`#3B0A6B`)**, and **Electric Cyan (`#00E5FF`)**. It connects directly to the backend APIs across ten views:
 
 1. **Overview (`#overview`)**: Quick metric tiles (total budget, headcount, milestone progress %, critical risks count), 8-category budget allocation bar, upcoming milestones, vendor progress, risk alert teaser, and family council summary.
 2. **Event Details (`#event-details`)**: Complete event profile breakdown, live profile editor (`PATCH /api/v1/events/{id}`), and list of all stored event profiles.
@@ -106,6 +106,8 @@ The web frontend at `http://localhost:8000` is an interactive planning console s
 6. **Event Ideas (`#ideas`)**: Personalized, budget-aware creative recommendations with category filters, feasibility fit pills, execution tips, and lower-cost alternatives.
 7. **Risk Analysis (`#risks`)**: Pre-mortem failure mode cards with heuristic priority scores (1 to 12), warning signs, preventive measures, contingency plans, and disclaimers.
 8. **Family Council (`#council`)**: Simulated deliberation across four distinct personas (*The Budget Guardian*, *The Guest Comfort Advocate*, *The Tradition & Experience Keeper*, *The Logistics & Risk Planner*), creative trade-offs, and executive verdict.
+9. **Crisis Recovery Center (`#crisis`)**: Real-time evaluation of event disruptions, severity triage (1 to 5), 3-tier actionable recovery playbooks, ready-to-send bilingual WhatsApp alerts, and plan saving.
+10. **Crisis Recovery History & Action Tracker (`#recovery-history`)**: Event-scoped audit trail of evaluated crises, individual recovery drill-down, interactive action item tracking (`pending`, `in_progress`, `completed`), live progress computation, and coordination notes.
 
 ---
 
@@ -140,6 +142,13 @@ PlanProof AI supports three explicit AI operation modes controlled by the `AI_MO
 | `GET` | `/api/v1/events/{event_id}/ideas` | Retrieve personalized, budget-aware recommendations with AI orchestration and fallback |
 | `GET` | `/api/v1/events/{event_id}/risks` | Retrieve event pre-mortem failure mode analysis, scoring, and contingency plan |
 | `GET` | `/api/v1/events/{event_id}/family-council` | Retrieve four-persona family council deliberation, trade-offs, and recommendations |
+| `GET` | `/api/v1/crisis/types` | List available crisis scenario taxonomy types |
+| `POST` | `/api/v1/crisis/evaluate` | Evaluate an event-day disruption and generate a 3-tier recovery plan |
+| `POST` | `/api/v1/events/{event_id}/crisis/recoveries` | Save a validated recovery plan and track selected action items |
+| `GET` | `/api/v1/events/{event_id}/crisis/recoveries` | List recovery history records for an event (newest first) |
+| `GET` | `/api/v1/events/{event_id}/crisis/recoveries/{recovery_id}` | Retrieve individual recovery record details and actions |
+| `PATCH` | `/api/v1/events/{event_id}/crisis/recoveries/{recovery_id}` | Update recovery record status or situation description |
+| `PATCH` | `/api/v1/events/{event_id}/crisis/recoveries/{recovery_id}/actions/{action_id}` | Update action item execution status or coordination notes |
 | `POST` | `/api/v1/validate-event` | Strict domain validation for event planning requests |
 | `POST` | `/api/v1/budget/calculate` | Deterministic 8-category budget allocation (Hamilton-Hare method) |
 | `POST` | `/api/v1/budget/rebalance` | Budget rebalancing with essential category preservation |
@@ -839,6 +848,65 @@ Accept: application/json
   "warnings": []
 }
 ```
+
+---
+
+## Crisis Recovery History & Action Tracker
+
+PlanProof AI includes an event-scoped **Crisis Recovery History and Action Tracker** allowing planners and families to save recovery playbooks generated during crisis triage, select specific mitigation actions to track, log real-time coordination notes, and monitor completion through to resolution.
+
+### 1. Recovery Records & Endpoints
+
+| Method | Route | Description |
+| :--- | :--- | :--- |
+| `POST` | `/api/v1/events/{event_id}/crisis/recoveries` | Save a validated recovery plan to the event with selected actions |
+| `GET` | `/api/v1/events/{event_id}/crisis/recoveries` | List all recovery records for the event, ordered newest first |
+| `GET` | `/api/v1/events/{event_id}/crisis/recoveries/{recovery_id}` | Retrieve a specific recovery record with its plan snapshot and tracked actions |
+| `PATCH` | `/api/v1/events/{event_id}/crisis/recoveries/{recovery_id}` | Update record-level status (`open`, `in_progress`, `resolved`) or description |
+| `PATCH` | `/api/v1/events/{event_id}/crisis/recoveries/{recovery_id}/actions/{action_id}` | Update an individual action's status (`pending`, `in_progress`, `completed`) or notes |
+
+### 2. Data Models & Status Values
+
+#### Recovery Record Status (`RecoveryStatus`)
+- `open`: Initial state upon saving. Mitigation actions are awaiting execution.
+- `in_progress`: At least one action item has begun execution or is completed while others remain.
+- `resolved`: All tracked action items have reached completion, or the host has explicitly marked the crisis resolved.
+
+#### Action Item Status (`RecoveryActionStatus`)
+- `pending`: Action is queued for execution.
+- `in_progress`: Coordination or mitigation is actively underway.
+- `completed`: Mitigation action has been executed successfully.
+
+### 3. Action Tracking & Progress Calculation Rules
+
+When saving a recovery plan, users can select all recommended actions or cherry-pick specific actions relevant to their situation:
+- **Stable IDs**: Action items receive deterministic, stable identifiers (e.g., `ACT-A1B2C3D4`) that persist across updates.
+- **Source Attribution**: The record truthfully records whether the underlying recovery plan was generated via `rules`, `demo`, or `gemini`.
+- **Progress Metrics**: Summary metrics are dynamically recalculated upon every action change:
+  - `total_actions`: Total number of tracked actions.
+  - `pending_actions`: Count of actions with `pending` status.
+  - `in_progress_actions`: Count of actions with `in_progress` status.
+  - `completed_actions`: Count of actions with `completed` status.
+  - `completion_percentage`: `round((completed_actions / total_actions) * 100, 1)` (or `0.0%` if no actions tracked).
+- **Resolution Safeguards**:
+  - Generating or saving a recovery plan **never** automatically marks a crisis resolved.
+  - As long as actions remain incomplete (`completed_actions < total_actions`), automatic progress recalculation keeps the record status as `in_progress` (or `open`), preventing premature auto-resolution.
+  - When all actions reach `completed` (`completed_actions == total_actions > 0`), the record automatically transitions to `resolved`.
+  - Planners can also explicitly update the overall status via `PATCH /api/v1/events/{event_id}/crisis/recoveries/{recovery_id}`.
+- **Resource Isolation**: Updating recovery records or action items is strictly event-scoped and never mutates the event's budget allocations, timeline schedule, or vendor checklist.
+
+### 4. Persistence Limitations
+
+PlanProof AI currently operates on an **in-memory event store (`EventStore`)** for rapid prototyping and zero-dependency deployments.
+- **Ephemeral Storage**: All saved events, recovery records, and action notes reside in process memory.
+- **Restart Notice**: If the FastAPI application server restarts or reloads, previously saved records will be reset to initial state.
+- **Production Roadmap**: Production deployments will back this domain model with a persistent relational or document store (PostgreSQL/Cloud SQL).
+
+### 5. Using the Recovery History Dashboard
+
+1. **Evaluate a Crisis**: Go to **Crisis Recovery Center (`#crisis`)**, choose a scenario (or custom disruption), and click **Run Crisis Recovery Drill**.
+2. **Save & Select Actions**: In the evaluation results, click **Save Plan & Track Actions**. A modal allows editing situation notes and selecting which recommended actions to track.
+3. **Track Execution**: Navigate to **Recovery History (`#recovery-history`)** to review all past crises for the active event. Click any record to inspect the complete saved plan, update action status dropdowns (`Pending` → `In Progress` → `Completed`), log contact notes, or adjust the overall recovery status.
 
 ---
 

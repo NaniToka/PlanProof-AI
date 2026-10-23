@@ -50,6 +50,11 @@ from app.schemas import (
     PreMortemRisk,
     StandardErrorResponse,
     VendorChecklistItemUpdateRequest,
+    CrisisRecoveryRecord,
+    RecoveryRecordCreateRequest,
+    RecoveryRecordUpdateRequest,
+    TrackedActionUpdateRequest,
+    TrackedRecoveryAction,
 )
 from app.services.ai_orchestrator import AIOrchestrator
 from app.services.crisis_service import SUPPORTED_CRISIS_TYPES
@@ -869,6 +874,162 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 detail=f"Event profile '{event_id}' not found.",
             )
         return result
+
+    @app.post(
+        "/api/v1/events/{event_id}/crisis/recoveries",
+        response_model=CrisisRecoveryRecord,
+        status_code=status.HTTP_201_CREATED,
+        responses={
+            404: {"model": StandardErrorResponse, "description": "Event profile not found"},
+            422: {"model": StandardErrorResponse, "description": "Validation error or invalid status"},
+        },
+        tags=["Crisis Recovery", "Events"],
+        summary="Save a validated crisis recovery record and track selected action items",
+    )
+    async def create_recovery_record(
+        event_id: str,
+        request_body: RecoveryRecordCreateRequest,
+        service: EventService = Depends(get_event_service),
+    ) -> CrisisRecoveryRecord:
+        """Save a validated recovery record from a generated plan and initialize action tracking."""
+        record = await service.save_recovery_record(event_id=event_id, request=request_body)
+        if record is None:
+            raise StarletteHTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Event profile '{event_id}' not found.",
+            )
+        return record
+
+    @app.get(
+        "/api/v1/events/{event_id}/crisis/recoveries",
+        response_model=list[CrisisRecoveryRecord],
+        responses={
+            404: {"model": StandardErrorResponse, "description": "Event profile not found"},
+        },
+        tags=["Crisis Recovery", "Events"],
+        summary="List historical crisis recovery records for an event (newest first)",
+    )
+    async def list_recovery_records(
+        event_id: str,
+        skip: int = Query(default=0, ge=0, description="Offset for pagination"),
+        limit: int = Query(default=50, ge=1, le=100, description="Limit batch size"),
+        service: EventService = Depends(get_event_service),
+    ) -> list[CrisisRecoveryRecord]:
+        """List historical recovery records for the target event sorted by creation date newest first."""
+        records = await service.list_recovery_records(event_id=event_id, skip=skip, limit=limit)
+        if records is None:
+            raise StarletteHTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Event profile '{event_id}' not found.",
+            )
+        return records
+
+    @app.get(
+        "/api/v1/events/{event_id}/crisis/recoveries/{recovery_id}",
+        response_model=CrisisRecoveryRecord,
+        responses={
+            404: {"model": StandardErrorResponse, "description": "Event profile or recovery record not found"},
+        },
+        tags=["Crisis Recovery", "Events"],
+        summary="Retrieve an individual crisis recovery record by ID",
+    )
+    async def get_recovery_record(
+        event_id: str,
+        recovery_id: str,
+        service: EventService = Depends(get_event_service),
+    ) -> CrisisRecoveryRecord:
+        """Retrieve a specific saved recovery record and its tracked action items."""
+        profile = await service.get_event(event_id)
+        if profile is None:
+            raise StarletteHTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Event profile '{event_id}' not found.",
+            )
+        record = await service.get_recovery_record(event_id=event_id, recovery_id=recovery_id)
+        if record is None:
+            raise StarletteHTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Recovery record '{recovery_id}' not found for event '{event_id}'.",
+            )
+        return record
+
+    @app.patch(
+        "/api/v1/events/{event_id}/crisis/recoveries/{recovery_id}",
+        response_model=CrisisRecoveryRecord,
+        responses={
+            404: {"model": StandardErrorResponse, "description": "Event profile or recovery record not found"},
+            422: {"model": StandardErrorResponse, "description": "Validation error or invalid status"},
+        },
+        tags=["Crisis Recovery", "Events"],
+        summary="Update recovery record status or host description",
+    )
+    async def update_recovery_record(
+        event_id: str,
+        recovery_id: str,
+        request_body: RecoveryRecordUpdateRequest,
+        service: EventService = Depends(get_event_service),
+    ) -> CrisisRecoveryRecord:
+        """Update supported fields on a recovery record, recalculating summary counts."""
+        profile = await service.get_event(event_id)
+        if profile is None:
+            raise StarletteHTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Event profile '{event_id}' not found.",
+            )
+        record = await service.update_recovery_record(
+            event_id=event_id,
+            recovery_id=recovery_id,
+            request=request_body,
+        )
+        if record is None:
+            raise StarletteHTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Recovery record '{recovery_id}' not found for event '{event_id}'.",
+            )
+        return record
+
+    @app.patch(
+        "/api/v1/events/{event_id}/crisis/recoveries/{recovery_id}/actions/{action_id}",
+        response_model=TrackedRecoveryAction,
+        responses={
+            404: {"model": StandardErrorResponse, "description": "Event, recovery, or action not found"},
+            422: {"model": StandardErrorResponse, "description": "Validation error or invalid status"},
+        },
+        tags=["Crisis Recovery", "Events"],
+        summary="Update execution status and coordinator notes for a tracked recovery action",
+    )
+    async def update_recovery_action(
+        event_id: str,
+        recovery_id: str,
+        action_id: str,
+        request_body: TrackedActionUpdateRequest,
+        service: EventService = Depends(get_event_service),
+    ) -> TrackedRecoveryAction:
+        """Update execution status and notes for an action, automatically recalculating recovery progress."""
+        profile = await service.get_event(event_id)
+        if profile is None:
+            raise StarletteHTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Event profile '{event_id}' not found.",
+            )
+        rec = await service.get_recovery_record(event_id=event_id, recovery_id=recovery_id)
+        if rec is None:
+            raise StarletteHTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Recovery record '{recovery_id}' not found for event '{event_id}'.",
+            )
+        action = await service.update_recovery_action(
+            event_id=event_id,
+            recovery_id=recovery_id,
+            action_id=action_id,
+            request=request_body,
+        )
+        if action is None:
+            raise StarletteHTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Tracked action '{action_id}' not found in recovery record '{recovery_id}'.",
+            )
+        return action
 
     @app.get(
         "/api/v1/ai/status",

@@ -8,6 +8,8 @@ Defines:
 - Standard error and status envelope models
 """
 
+from __future__ import annotations
+
 import math
 import re
 from datetime import date, datetime, timedelta, timezone
@@ -216,6 +218,22 @@ class RiskSource(StrEnum):
     RULES = "rules"
     DEMO = "demo"
     GEMINI = "gemini"
+
+
+class RecoveryStatus(StrEnum):
+    """Lifecycle status of a crisis recovery record."""
+
+    OPEN = "open"
+    IN_PROGRESS = "in_progress"
+    RESOLVED = "resolved"
+
+
+class RecoveryActionStatus(StrEnum):
+    """Lifecycle status of a tracked recovery action."""
+
+    PENDING = "pending"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
 
 
 
@@ -816,6 +834,9 @@ class EventProfile(BaseModel):
     )
     vendor_checklist: list[EventVendorChecklistItem] = Field(
         default_factory=list, description="Event-specific vendor checklist and coordination items"
+    )
+    recovery_records: list[CrisisRecoveryRecord] = Field(
+        default_factory=list, description="Historical crisis recovery records and action trackers"
     )
     created_at: datetime = Field(..., description="Server creation timestamp (UTC)")
     updated_at: datetime = Field(..., description="Server last modification timestamp (UTC)")
@@ -1612,6 +1633,138 @@ class CrisisTypeMetadata(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
 
 
+class RecoveryProgressSummary(BaseModel):
+    """Summary counts and completion percentage calculated from tracked actions."""
+
+    total_actions: int = Field(default=0, ge=0, description="Total count of tracked recovery actions")
+    pending_actions: int = Field(default=0, ge=0, description="Count of actions currently pending")
+    in_progress_actions: int = Field(default=0, ge=0, description="Count of actions currently in progress")
+    completed_actions: int = Field(default=0, ge=0, description="Count of actions successfully completed")
+    completion_percentage: float = Field(
+        default=0.0, ge=0.0, le=100.0, description="Calculated action completion percentage (0-100)"
+    )
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class TrackedRecoveryAction(BaseModel):
+    """Individual actionable recovery step tracked within an event crisis record."""
+
+    action_id: str = Field(..., description="Stable, unique action identifier (e.g. ACT-1 or ACT-...)")
+    recovery_id: str | None = Field(default=None, description="Owning crisis recovery identifier")
+    title: str = Field(..., min_length=1, max_length=200, description="Concise action item title")
+    description: str = Field(..., min_length=1, max_length=1000, description="Detailed actionable instruction")
+    priority: int = Field(default=2, ge=1, le=3, description="Priority rating (1=immediate, 2=operational, 3=follow-up)")
+    status: RecoveryActionStatus = Field(
+        default=RecoveryActionStatus.PENDING, description="Current tracking status"
+    )
+    notes: str | None = Field(
+        default=None, max_length=1000, description="Optional coordinator execution notes or updates"
+    )
+    created_at: datetime = Field(..., description="Timestamp when action was added to tracking (UTC)")
+    updated_at: datetime = Field(..., description="Timestamp when action was last modified (UTC)")
+    progress: RecoveryProgressSummary | None = Field(
+        default=None, description="Optional parent recovery progress summary snapshot"
+    )
+
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+
+class CrisisRecoveryRecord(BaseModel):
+    """Saved recovery record and action tracker scoped to an event."""
+
+    recovery_id: str = Field(..., description="Unique server-generated recovery identifier (e.g. REC-...)")
+    event_id: str = Field(..., description="Owning event identifier")
+    crisis_type: str = Field(..., min_length=2, max_length=100, description="Category of the crisis encountered")
+    severity: int = Field(..., ge=1, le=3, description="Crisis severity rating (1=minor, 2=moderate, 3=critical)")
+    description: str | None = Field(
+        default=None, max_length=1000, description="Validated, length-limited description of the crisis"
+    )
+    recovery_plan: EventCrisisRecoveryResponse = Field(
+        ..., description="Validated recovery plan snapshot at the time of crisis evaluation"
+    )
+    source: str = Field(
+        default="rules", max_length=50, description="Actual provenance source of the plan (e.g. rules, demo, gemini)"
+    )
+    status: RecoveryStatus = Field(
+        default=RecoveryStatus.OPEN, description="Overall recovery lifecycle status (open, in_progress, resolved)"
+    )
+    actions: list[TrackedRecoveryAction] = Field(
+        default_factory=list, description="List of tracked action items with execution status and notes"
+    )
+    progress: RecoveryProgressSummary = Field(
+        default_factory=RecoveryProgressSummary, description="Recalculated action progress summary"
+    )
+    total_actions: int = Field(default=0, ge=0, description="Total count of saved actions")
+    completed_actions: int = Field(default=0, ge=0, description="Count of completed actions")
+    created_at: datetime = Field(..., description="Timestamp when recovery record was created (UTC)")
+    updated_at: datetime = Field(..., description="Timestamp when recovery record was last updated (UTC)")
+
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+
+class TrackedActionInput(BaseModel):
+    """Input payload to specify or customize an action to track when saving a recovery plan."""
+
+    action_id: str | None = Field(default=None, max_length=100, description="Optional stable action ID")
+    title: str = Field(..., min_length=1, max_length=200, description="Action title")
+    description: str = Field(..., min_length=1, max_length=1000, description="Detailed actionable instruction")
+    priority: int = Field(default=2, ge=1, le=3, description="Priority rating (1=high, 2=medium, 3=low)")
+    status: RecoveryActionStatus = Field(
+        default=RecoveryActionStatus.PENDING, description="Initial action status"
+    )
+    notes: str | None = Field(default=None, max_length=1000, description="Optional initial notes")
+
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+
+class RecoveryRecordCreateRequest(BaseModel):
+    """Request payload to save a validated recovery record from a generated crisis plan."""
+
+    crisis_type: str = Field(..., min_length=2, max_length=100, description="Category of the crisis")
+    severity: int = Field(..., ge=1, le=3, description="Crisis severity rating (1=minor, 2=moderate, 3=critical)")
+    description: str | None = Field(
+        default=None, max_length=1000, description="Optional host description of the crisis"
+    )
+    recovery_plan: EventCrisisRecoveryResponse = Field(
+        ..., description="Validated recovery plan snapshot generated by crisis evaluation"
+    )
+    source: str = Field(
+        default="rules", max_length=50, description="Source attribution (e.g. rules, demo, gemini)"
+    )
+    status: RecoveryStatus = Field(
+        default=RecoveryStatus.OPEN, description="Initial recovery status"
+    )
+    actions: list[TrackedActionInput] | None = Field(
+        default=None,
+        description="Optional list of specific actions to track. If omitted, extracted from recovery_plan.",
+    )
+
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+
+class RecoveryRecordUpdateRequest(BaseModel):
+    """Request payload to partially update a recovery record (e.g. status or description)."""
+
+    status: RecoveryStatus | None = Field(default=None, description="Updated recovery status")
+    description: str | None = Field(
+        default=None, max_length=1000, description="Updated crisis description"
+    )
+
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+
+class TrackedActionUpdateRequest(BaseModel):
+    """Request payload to update an action's execution status and coordinator notes."""
+
+    status: RecoveryActionStatus | None = Field(default=None, description="Updated action status")
+    notes: str | None = Field(
+        default=None, max_length=1000, description="Updated coordinator execution notes"
+    )
+
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+
 class EventPlanResponse(BaseModel):
     """Full composite event plan data contract for future AI generation."""
 
@@ -1926,4 +2079,9 @@ class AIResultEnvelope(BaseModel, Generic[DataT]):
                 f"Result envelope data must be None when status is '{self.status.value}'"
             )
         return self
+
+
+# Rebuild EventProfile to resolve forward reference to CrisisRecoveryRecord
+EventProfile.model_rebuild()
+
 
