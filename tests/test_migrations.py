@@ -163,3 +163,32 @@ def test_down_migrations_match_up_migrations() -> None:
                 table_found = True
                 break
         assert table_found, f"Missing DROP TABLE statement for public.{table} in migrations/down/"
+
+
+def test_no_stub_auth_objects_created_in_migrations() -> None:
+    """Verify that no migration creates fake auth.users table or overwrites auth.uid().
+
+    In Supabase, auth schema objects (auth.users, auth.uid) are managed by Supabase Auth (GoTrue).
+    Application migrations must never create or alter stub auth objects.
+    """
+    for up_file in MIGRATIONS_DIR.glob("*.sql"):
+        sql = up_file.read_text(encoding="utf-8")
+        # Assert no fake auth.users table creation
+        assert not re.search(
+            r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?auth\.users\b", sql, re.IGNORECASE
+        ), f"Migration {up_file.name} contains forbidden stub auth.users table creation"
+
+        # Assert no overwriting of auth.uid function
+        assert not re.search(
+            r"CREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION\s+auth\.uid\b", sql, re.IGNORECASE
+        ), f"Migration {up_file.name} contains forbidden overwriting of auth.uid() function"
+
+
+def test_migration_00009_role_grants_security() -> None:
+    """Verify that migration 00009 grants permissions strictly without granting anon access to private tables."""
+    sql = (MIGRATIONS_DIR / "00009_grant_authenticated_role_permissions.sql").read_text(encoding="utf-8")
+    assert "TO authenticated" in sql
+    # Anon should NOT be granted SELECT on all tables
+    assert not re.search(r"GRANT\s+SELECT\s+ON\s+ALL\s+TABLES\s+IN\s+SCHEMA\s+public\s+TO\s+anon\b", sql, re.IGNORECASE), (
+        "Migration 00009 must not grant SELECT on all tables to anon"
+    )

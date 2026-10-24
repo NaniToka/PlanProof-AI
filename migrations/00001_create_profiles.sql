@@ -6,17 +6,8 @@
 -- Holds user profile metadata (full_name, email) without duplicating auth secrets.
 -- ==============================================================================
 
--- 1. Ensure auth schema and stub table exist for plain PostgreSQL testing environments.
--- In production Supabase, auth.users is managed by Supabase Auth (GoTrue).
-CREATE SCHEMA IF NOT EXISTS auth;
-
-CREATE TABLE IF NOT EXISTS auth.users (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    email TEXT UNIQUE,
-    raw_user_meta_data JSONB DEFAULT '{}'::jsonb,
-    created_at TIMESTAMPTZ DEFAULT timezone('utc', now()),
-    updated_at TIMESTAMPTZ DEFAULT timezone('utc', now())
-);
+-- 1. In Supabase, auth.users is managed by Supabase Auth (GoTrue).
+-- Application tables reference auth.users(id) with ON DELETE CASCADE.
 
 -- 2. Shared utility function for automatically updating updated_at timestamp
 CREATE OR REPLACE FUNCTION public.handle_updated_at()
@@ -62,7 +53,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
--- Attach user creation trigger to auth.users if table is present
+-- Attach user creation trigger to auth.users if table is present and permitted
 DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'auth' AND tablename = 'users') THEN
@@ -71,6 +62,8 @@ BEGIN
             AFTER INSERT ON auth.users
             FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
     END IF;
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE 'Skipping auth.users trigger setup due to permissions: %', SQLERRM;
 END $$;
 
 COMMENT ON TABLE public.profiles IS 'User profiles linked to Supabase auth.users holding non-sensitive account details.';

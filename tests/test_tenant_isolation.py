@@ -354,13 +354,15 @@ async def test_guest_session_isolation(client: AsyncClient) -> None:
 
 @pytest.mark.asyncio
 async def test_postgres_rls_transaction_scoping_and_zero_leakage() -> None:
-    """Live PostgreSQL RLS context test: verifying transaction-scoped identity and pool safety.
+    """Live PostgreSQL RLS context test: verifying transaction-scoped identity and pool safety under non-bypass role.
 
     If local test DB is available, tests real RLS enforcement under transaction settings.
     """
-    db_url = os.getenv("TEST_DATABASE_URL", "postgresql://tokanani@127.0.0.1:5432/planproof_step1c_test")
+    admin_url = os.getenv("TEST_ADMIN_DATABASE_URL", "postgresql://tokanani@127.0.0.1:5432/planproof_step1c_test")
+    app_url = os.getenv("TEST_APP_DATABASE_URL", "postgresql://planproof_test_app@127.0.0.1:5432/planproof_step1c_test")
+
     try:
-        conn = await asyncpg.connect(db_url)
+        admin_conn = await asyncpg.connect(admin_url)
     except Exception:
         pytest.skip("Local test PostgreSQL database not available for live RLS pool test.")
 
@@ -368,8 +370,8 @@ async def test_postgres_rls_transaction_scoping_and_zero_leakage() -> None:
         user_1 = uuid4()
         user_2 = uuid4()
 
-        # Ensure profiles exist via auth.users
-        await conn.execute(
+        # Ensure profiles exist via auth.users using admin provisioning
+        await admin_conn.execute(
             """
             INSERT INTO auth.users (id, email)
             VALUES ($1, $3),
@@ -382,8 +384,15 @@ async def test_postgres_rls_transaction_scoping_and_zero_leakage() -> None:
             f"tenant-{user_2}@example.com",
         )
 
-        repo = PostgresEventRepository(database_url=db_url)
+        # Repository MUST connect as non-bypass application role (NOT superuser, NOT bypassrls)
+        repo = PostgresEventRepository(database_url=app_url)
         await repo.connect()
+
+        async with repo.acquire_connection() as conn_check:
+            is_super = await conn_check.fetchval("SELECT current_setting('is_superuser');")
+            assert is_super == "off", "Repository connection must not be superuser"
+            bypass = await conn_check.fetchval("SELECT rolbypassrls FROM pg_roles WHERE rolname = current_user;")
+            assert bypass is False, "Repository connection must not have BYPASSRLS"
 
         now = datetime.now(timezone.utc)
         # User 1 creates an event
@@ -429,4 +438,5 @@ async def test_postgres_rls_transaction_scoping_and_zero_leakage() -> None:
         await repo.disconnect()
 
     finally:
-        await conn.close()
+        await admin_conn.execute("DELETE FROM auth.users WHERE id IN ($1, $2);", user_1, user_2)
+        await admin_conn.close()

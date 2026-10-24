@@ -13,13 +13,9 @@
 -- 5. Anonymous users cannot read or mutate persistent user-owned records.
 -- ==============================================================================
 
--- Safe stub for auth.uid() when applying migrations outside of Supabase GoTrue context
-CREATE SCHEMA IF NOT EXISTS auth;
+-- Note: auth.uid() is natively provided and maintained by Supabase Auth in the auth schema.
+-- Application migrations do not define or overwrite objects in the auth schema.
 
-CREATE OR REPLACE FUNCTION auth.uid()
-RETURNS UUID AS $$
-    SELECT NULLIF(current_setting('request.jwt.claim.sub', true), '')::UUID;
-$$ LANGUAGE sql STABLE;
 
 -- ------------------------------------------------------------------------------
 -- 1. Enable RLS on all 7 application tables

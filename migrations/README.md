@@ -18,18 +18,22 @@ Migrations are numbered sequentially and must be applied in the following depend
 | **06** | [`00006_create_crisis_recovery_records.sql`](./00006_create_crisis_recovery_records.sql) | Incident recovery plan logs and action tracker headers | `public.crisis_recovery_records` |
 | **07** | [`00007_create_crisis_recovery_actions.sql`](./00007_create_crisis_recovery_actions.sql) | Granular actionable recovery steps and execution notes | `public.crisis_recovery_actions` |
 | **08** | [`00008_enable_row_level_security.sql`](./00008_enable_row_level_security.sql) | Enable RLS and multi-tenant isolation policies | All 7 tables |
+| **09** | [`00009_grant_authenticated_role_permissions.sql`](./00009_grant_authenticated_role_permissions.sql) | Grant authenticated role schema and table permissions | `public` schema |
 
 ### Rollback / Down Migrations
-Symmetrical reversal scripts are located in [`migrations/down/`](./down/) and must be executed in reverse order (`00008` down to `00001`).
+Symmetrical reversal scripts are located in [`migrations/down/`](./down/) and must be executed in reverse order (`00009` down to `00001`).
 
 ---
 
-## 2. Required Supabase Environment
+## 2. Required Supabase Environment & Role Architecture
 
 PlanProof AI migrations are designed for **Supabase PostgreSQL 15+** with GoTrue authentication:
-- **Supabase Local Development**: Supported via the official Supabase CLI (`supabase start`).
-- **Managed Supabase Project**: Supported via Supabase Dashboard SQL Editor or direct connection string (`DATABASE_URL`).
-- **Plain PostgreSQL (Testing / Offline)**: Migration `00001` and `00008` contain fallback stubs for `auth.users` and `auth.uid()`, allowing migrations to be validated syntax-checked on any PostgreSQL 15+ instance without requiring GoTrue or Docker.
+- **Supabase Auth Integration**: Application tables reference `auth.users(id)` with cascade deletion. No fake or stub `auth.users` table exists in application migrations.
+- **Supabase Built-in Identity**: RLS policies evaluate tenant identity using `auth.uid()`, which is natively provided and maintained by Supabase Auth in the `auth` schema.
+- **Application Database Connection Role**:
+  - The runtime connection role (e.g. `planproof_app` or `planproof_test_app`) **must NOT** have `BYPASSRLS` or superuser privileges.
+  - The connection role must be granted membership in `authenticated` (`GRANT authenticated TO <app_role>;`) so it can establish transaction-scoped user claims via `set_config('role', 'authenticated', true)`.
+  - In plain PostgreSQL testing environments, test harnesses initialize mock auth tables separately without placing unsafe stubs into application migrations.
 
 ---
 

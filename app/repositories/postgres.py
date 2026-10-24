@@ -49,7 +49,19 @@ logger = logging.getLogger(__name__)
 
 
 class PostgresEventRepository(BaseEventRepository):
-    """PostgreSQL implementation of BaseEventRepository using asyncpg and Supabase RLS."""
+    """PostgreSQL implementation of BaseEventRepository using asyncpg and Supabase RLS.
+
+    Database Role Architecture:
+    - The connection role (e.g. 'planproof_app' or 'planproof_test_app') must NOT be a
+      superuser and must NOT possess the BYPASSRLS privilege.
+    - The connection role must be granted membership in the 'authenticated' role
+      (GRANT authenticated TO <connection_role>;) to permit transaction-local role switching.
+    - Each database operation executes inside an explicit transaction where the verified
+      user identity is set via transaction-local configuration parameters:
+        1. set_config('role', 'authenticated', true)
+        2. set_config('request.jwt.claim.sub', str(user_id), true)
+    - All RLS policies on tables and child tables are evaluated by PostgreSQL engine itself.
+    """
 
     def __init__(
         self,
@@ -174,6 +186,16 @@ class PostgresEventRepository(BaseEventRepository):
             try:
                 async with conn.transaction():
                     await self._set_rls_context(conn, owner_id)
+
+                    # 0. Ensure user profile exists (authenticated application operation)
+                    await conn.execute(
+                        """
+                        INSERT INTO public.profiles (id, email)
+                        VALUES ($1, '')
+                        ON CONFLICT (id) DO NOTHING;
+                        """,
+                        owner_id,
+                    )
 
                     # 1. Insert parent event
                     await conn.execute(
