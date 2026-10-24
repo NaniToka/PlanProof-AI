@@ -21,6 +21,7 @@ import jwt
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from app.auth import create_guest_session_token
 from app.config import Settings
 from app.main import create_app
 from app.repositories import PostgresEventRepository
@@ -308,9 +309,9 @@ async def test_child_resources_protected_by_event_ownership(client: AsyncClient)
 
 @pytest.mark.asyncio
 async def test_guest_session_isolation(client: AsyncClient) -> None:
-    """Guest sessions with different session headers cannot access each other's events."""
-    session_1 = str(uuid4())
-    session_2 = str(uuid4())
+    """Guest sessions with different server-issued session headers cannot access each other's events."""
+    session_1, _, _ = create_guest_session_token(secret=TEST_JWT_SECRET)
+    session_2, _, _ = create_guest_session_token(secret=TEST_JWT_SECRET)
 
     # Guest 1 creates an event
     resp_g1 = await client.post(
@@ -350,6 +351,73 @@ async def test_guest_session_isolation(client: AsyncClient) -> None:
         headers={"X-Guest-Session-ID": session_1},
     )
     assert resp_g1_ok.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_forged_or_guessed_guest_session_rejected(client: AsyncClient) -> None:
+    """A forged, guessed, or raw UUID guest session identifier cannot access or create data."""
+    # 1. Raw guessed UUID
+    raw_uuid = str(uuid4())
+    resp_raw = await client.get("/api/v1/events", headers={"X-Guest-Session-ID": raw_uuid})
+    assert resp_raw.status_code == 401
+    assert resp_raw.json()["error"]["code"] == "INVALID_GUEST_SESSION"
+
+    # 2. Forged signature
+    valid_token, _, _ = create_guest_session_token(secret=TEST_JWT_SECRET)
+    tampered_token = valid_token[:-4] + "xxxx"
+    resp_tampered = await client.get("/api/v1/events", headers={"X-Guest-Session-ID": tampered_token})
+    assert resp_tampered.status_code == 401
+    assert resp_tampered.json()["error"]["code"] == "INVALID_GUEST_SESSION"
+
+    # 3. Expired guest token
+    expired_token, _, _ = create_guest_session_token(ttl_seconds=-10, secret=TEST_JWT_SECRET)
+    resp_expired = await client.get("/api/v1/events", headers={"X-Guest-Session-ID": expired_token})
+    assert resp_expired.status_code == 401
+    assert resp_expired.json()["error"]["code"] == "INVALID_GUEST_SESSION"
+
+    # 4. Token signed with wrong secret
+    wrong_token, _, _ = create_guest_session_token(secret="completely-different-secret-key-32!")
+    resp_wrong = await client.get("/api/v1/events", headers={"X-Guest-Session-ID": wrong_token})
+    assert resp_wrong.status_code == 401
+    assert resp_wrong.json()["error"]["code"] == "INVALID_GUEST_SESSION"
+
+
+@pytest.mark.asyncio
+async def test_guest_cannot_access_postgres_storage(auth_settings: Settings) -> None:
+    """Guest sessions are strictly rejected when storage backend is PostgreSQL."""
+    pg_settings = auth_settings.model_copy(
+        update={
+            "storage_backend": "postgres",
+            "database_url": "postgresql://test_user:test_pass@127.0.0.1:5432/test_db",
+        }
+    )
+    app = create_app(settings=pg_settings)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as pg_client:
+        valid_guest_token, _, _ = create_guest_session_token(secret=TEST_JWT_SECRET)
+        resp = await pg_client.get(
+            "/api/v1/events", headers={"X-Guest-Session-ID": valid_guest_token}
+        )
+        assert resp.status_code == 401
+        assert resp.json()["error"]["code"] == "AUTHENTICATION_REQUIRED"
+        assert "PostgreSQL" in resp.json()["error"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_guest_session_issuance_endpoint(client: AsyncClient) -> None:
+    """Server issues cryptographically valid guest tokens via endpoint."""
+    resp = await client.post("/api/v1/auth/guest-session")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "guest_session_token" in data
+    assert data["guest_session_token"].startswith("gst.")
+    assert "session_id" in data
+    assert "expires_at" in data
+    # Response also sets header and cookie
+    assert "X-Guest-Session-ID" in resp.headers
+    assert "planproof_guest_session" in resp.cookies
+
 
 
 @pytest.mark.asyncio

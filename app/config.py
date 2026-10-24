@@ -1,6 +1,7 @@
 """Application configuration for PlanProof AI using Pydantic Settings."""
 
 import json
+import secrets
 from enum import StrEnum
 from functools import lru_cache
 from pathlib import Path
@@ -9,6 +10,8 @@ from urllib.parse import urlparse
 
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_PROCESS_GUEST_SECRET: bytes = secrets.token_bytes(32)
 
 
 class ConfigurationError(Exception):
@@ -154,6 +157,15 @@ class Settings(BaseSettings):
         default=True,
         description="Allow unauthenticated guest access for ephemeral in-memory sessions",
     )
+    guest_session_secret: SecretStr | None = Field(
+        default=None,
+        description="Optional secret key for signing ephemeral guest session tokens",
+    )
+    guest_session_ttl_seconds: int = Field(
+        default=86400,
+        ge=60,
+        description="TTL for ephemeral guest session tokens in seconds (default 24h)",
+    )
     database_url: SecretStr | None = Field(
         default=None,
         description="PostgreSQL database connection URL (e.g. Supabase connection pooler)",
@@ -238,23 +250,71 @@ class Settings(BaseSettings):
 
     def get_gemini_api_key_value(self) -> str | None:
         """Safely expose the raw API key without leaking it in repr/str."""
-        return self.gemini_api_key.get_secret_value() if self.gemini_api_key else None
+        if not self.gemini_api_key:
+            return None
+        return (
+            self.gemini_api_key.get_secret_value()
+            if isinstance(self.gemini_api_key, SecretStr)
+            else str(self.gemini_api_key)
+        )
 
     def get_supabase_anon_key_value(self) -> str | None:
         """Safely expose raw Supabase anon key without leaking in repr/str."""
-        return self.supabase_anon_key.get_secret_value() if self.supabase_anon_key else None
+        if not self.supabase_anon_key:
+            return None
+        return (
+            self.supabase_anon_key.get_secret_value()
+            if isinstance(self.supabase_anon_key, SecretStr)
+            else str(self.supabase_anon_key)
+        )
 
     def get_supabase_jwt_secret_value(self) -> str | None:
         """Safely expose raw Supabase JWT secret without leaking in repr/str."""
-        return self.supabase_jwt_secret.get_secret_value() if self.supabase_jwt_secret else None
+        if not self.supabase_jwt_secret:
+            return None
+        return (
+            self.supabase_jwt_secret.get_secret_value()
+            if isinstance(self.supabase_jwt_secret, SecretStr)
+            else str(self.supabase_jwt_secret)
+        )
 
     def get_supabase_jwt_public_key_value(self) -> str | None:
         """Safely expose raw Supabase JWT public key PEM without leaking in repr/str."""
-        return self.supabase_jwt_public_key.get_secret_value() if self.supabase_jwt_public_key else None
+        if not self.supabase_jwt_public_key:
+            return None
+        return (
+            self.supabase_jwt_public_key.get_secret_value()
+            if isinstance(self.supabase_jwt_public_key, SecretStr)
+            else str(self.supabase_jwt_public_key)
+        )
 
     def get_database_url_value(self) -> str | None:
         """Safely expose raw Database URL without leaking in repr/str."""
-        return self.database_url.get_secret_value() if self.database_url else None
+        if not self.database_url:
+            return None
+        return (
+            self.database_url.get_secret_value()
+            if isinstance(self.database_url, SecretStr)
+            else str(self.database_url)
+        )
+
+    def get_guest_session_secret_bytes(self) -> bytes:
+        """Derive signing key for guest sessions from guest_session_secret, supabase_jwt_secret, or process key."""
+        if self.guest_session_secret:
+            val = (
+                self.guest_session_secret.get_secret_value()
+                if isinstance(self.guest_session_secret, SecretStr)
+                else str(self.guest_session_secret)
+            )
+            return val.encode("utf-8")
+        if self.supabase_jwt_secret:
+            val = (
+                self.supabase_jwt_secret.get_secret_value()
+                if isinstance(self.supabase_jwt_secret, SecretStr)
+                else str(self.supabase_jwt_secret)
+            )
+            return val.encode("utf-8")
+        return _PROCESS_GUEST_SECRET
 
     @field_validator(
         "gemini_api_key",
@@ -264,6 +324,7 @@ class Settings(BaseSettings):
         "supabase_jwt_public_key",
         "supabase_jwks_url",
         "supabase_jwt_issuer",
+        "guest_session_secret",
         "database_url",
         mode="before",
     )

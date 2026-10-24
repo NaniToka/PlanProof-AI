@@ -12,13 +12,19 @@ Provides:
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
 import logging
+import time
+from base64 import urlsafe_b64decode, urlsafe_b64encode
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import jwt
-from fastapi import Depends, Header, Request
+from fastapi import Depends, Request
 from jwt import PyJWKClient
 
 from app.config import Settings, get_settings
@@ -70,7 +76,7 @@ class GuestUser:
     is_guest: bool = True
 
     def __repr__(self) -> str:
-        return f"GuestUser(user_id={self.user_id})"
+        return "GuestUser(is_guest=True)"
 
 
 # ==============================================================================
@@ -281,6 +287,147 @@ async def get_current_user(
     return verifier.verify_token(token)
 
 
+# ==============================================================================
+# 5. Cryptographic Server-Issued Guest Sessions
+# ==============================================================================
+
+GUEST_TOKEN_PREFIX = "gst."
+
+
+def create_guest_session_token(
+    session_id: UUID | None = None,
+    ttl_seconds: int = 86400,
+    secret: bytes | str | None = None,
+) -> tuple[str, UUID, datetime]:
+    """Issue a cryptographically signed, tamper-evident guest session token.
+
+    Format: gst.<base64url_payload>.<base64url_hmac_sha256>
+
+    Args:
+        session_id: Optional UUID. If omitted, a fresh random UUID4 is generated.
+        ttl_seconds: Expiration lifetime in seconds (default 86400 = 24h).
+        secret: Signing key bytes or string. If omitted, derived from global settings.
+
+    Returns:
+        tuple of (token_string, session_uuid, expiration_datetime_utc)
+    """
+    if session_id is None:
+        session_id = uuid4()
+
+    if secret is None:
+        secret = get_settings().get_guest_session_secret_bytes()
+    elif isinstance(secret, str):
+        secret = secret.encode("utf-8")
+
+    now_ts = int(time.time())
+    exp_ts = now_ts + ttl_seconds
+    expires_at = datetime.fromtimestamp(exp_ts, tz=timezone.utc)
+
+    payload_dict = {
+        "sid": str(session_id),
+        "iat": now_ts,
+        "exp": exp_ts,
+    }
+    payload_json = json.dumps(payload_dict, separators=(",", ":")).encode("utf-8")
+    payload_b64 = urlsafe_b64encode(payload_json).decode("ascii").rstrip("=")
+
+    signature = hmac.new(secret, payload_b64.encode("ascii"), hashlib.sha256).digest()
+    sig_b64 = urlsafe_b64encode(signature).decode("ascii").rstrip("=")
+
+    token = f"{GUEST_TOKEN_PREFIX}{payload_b64}.{sig_b64}"
+    return token, session_id, expires_at
+
+
+def verify_guest_session_token(
+    token: str,
+    secret: bytes | str | None = None,
+) -> UUID:
+    """Validate and decode a server-issued guest session token.
+
+    Verifies format, HMAC-SHA256 signature, expiration, and UUID structure.
+    Strictly rejects raw UUIDs, forged signatures, and expired tokens.
+
+    Args:
+        token: The signed guest session token.
+        secret: Signing key bytes or string. If omitted, derived from global settings.
+
+    Returns:
+        The verified guest session UUID.
+
+    Raises:
+        AuthenticationError: If token is malformed, forged, tampered, raw UUID, or expired.
+    """
+    if not token or not isinstance(token, str):
+        raise AuthenticationError("INVALID_GUEST_SESSION", "Guest session token is missing or empty.")
+
+    token = token.strip()
+    if not token.startswith(GUEST_TOKEN_PREFIX):
+        raise AuthenticationError(
+            "INVALID_GUEST_SESSION",
+            "Guest session token format is invalid, raw, or forged.",
+        )
+
+    parts = token.split(".")
+    if len(parts) != 3 or parts[0] != "gst":
+        raise AuthenticationError(
+            "INVALID_GUEST_SESSION",
+            "Guest session token structure is invalid.",
+        )
+
+    payload_b64 = parts[1]
+    sig_b64 = parts[2]
+
+    if secret is None:
+        secret = get_settings().get_guest_session_secret_bytes()
+    elif isinstance(secret, str):
+        secret = secret.encode("utf-8")
+
+    expected_sig = hmac.new(secret, payload_b64.encode("ascii"), hashlib.sha256).digest()
+    expected_sig_b64 = urlsafe_b64encode(expected_sig).decode("ascii").rstrip("=")
+
+    if not hmac.compare_digest(sig_b64, expected_sig_b64):
+        logger.warning("Rejected guest session token with invalid HMAC signature.")
+        raise AuthenticationError(
+            "INVALID_GUEST_SESSION",
+            "Guest session token signature is invalid or forged.",
+        )
+
+    try:
+        padded_b64 = payload_b64 + "=" * (-len(payload_b64) % 4)
+        payload_bytes = urlsafe_b64decode(padded_b64.encode("ascii"))
+        payload = json.loads(payload_bytes.decode("utf-8"))
+    except Exception as exc:
+        logger.warning("Failed to decode guest session token payload: %s", type(exc).__name__)
+        raise AuthenticationError(
+            "INVALID_GUEST_SESSION",
+            "Guest session token payload is malformed.",
+        ) from exc
+
+    exp_ts = payload.get("exp")
+    if not isinstance(exp_ts, (int, float)) or time.time() > exp_ts:
+        raise AuthenticationError(
+            "INVALID_GUEST_SESSION",
+            "Guest session token has expired.",
+        )
+
+    sid_str = payload.get("sid")
+    if not sid_str:
+        raise AuthenticationError(
+            "INVALID_GUEST_SESSION",
+            "Guest session token is missing session identifier.",
+        )
+
+    try:
+        session_uuid = UUID(str(sid_str))
+    except (ValueError, TypeError) as exc:
+        raise AuthenticationError(
+            "INVALID_GUEST_SESSION",
+            "Guest session identifier is not a valid UUID.",
+        ) from exc
+
+    return session_uuid
+
+
 async def get_current_user_or_guest(
     request: Request,
     verifier: SupabaseTokenVerifier = Depends(get_token_verifier),
@@ -293,7 +440,12 @@ async def get_current_user_or_guest(
     - If Authorization header is absent:
       - If STORAGE_BACKEND is 'postgres': guest access is strictly rejected with 401.
       - If APP_ENV is 'production' and ALLOW_GUEST_MODE is False: rejected with 401.
-      - Otherwise: guest access is permitted in-memory. Guest events are isolated.
+      - Otherwise: guest access is permitted in-memory.
+        - If X-Guest-Session-ID header is present: verified cryptographically.
+          Invalid, forged, raw, or expired tokens fail with 401.
+        - If planproof_guest_session cookie is present: verified cryptographically.
+        - If neither is present: a new isolated server-issued session is created for this request,
+          preventing any persistent shared guest identity.
     """
     token = extract_bearer_token(request)
     if token:
@@ -315,13 +467,28 @@ async def get_current_user_or_guest(
             "Guest access is disabled in production. Please sign in.",
         )
 
-    # Ephemeral guest user
+    secret = settings.get_guest_session_secret_bytes()
     guest_header = request.headers.get("X-Guest-Session-ID")
-    guest_id: UUID | None = None
-    if guest_header and isinstance(guest_header, str):
-        try:
-            guest_id = UUID(guest_header.strip())
-        except (ValueError, TypeError):
-            guest_id = None
+    if guest_header and guest_header.strip():
+        # Strictly verify client-supplied guest session header
+        verified_guest_id = verify_guest_session_token(guest_header.strip(), secret=secret)
+        return GuestUser(user_id=verified_guest_id)
 
-    return GuestUser(user_id=guest_id)
+    # Check cookie fallback
+    guest_cookie = request.cookies.get("planproof_guest_session")
+    if guest_cookie and guest_cookie.strip():
+        try:
+            verified_guest_id = verify_guest_session_token(guest_cookie.strip(), secret=secret)
+            return GuestUser(user_id=verified_guest_id)
+        except AuthenticationError:
+            pass
+
+    # No token provided: generate a fresh isolated server-issued session
+    # This prevents unauthenticated callers from ever sharing a persistent 'None' identity
+    new_token, new_guest_id, _ = create_guest_session_token(
+        ttl_seconds=settings.guest_session_ttl_seconds,
+        secret=secret,
+    )
+    request.state.new_guest_token = new_token
+    return GuestUser(user_id=new_guest_id)
+

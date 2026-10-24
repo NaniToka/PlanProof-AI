@@ -6,6 +6,7 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import date
 from pathlib import Path
+from typing import Any
 
 from fastapi import Depends, FastAPI, Query, Request, Response, status
 from fastapi.exceptions import RequestValidationError
@@ -45,6 +46,7 @@ from app.schemas import (
     EventValidationResponse,
     EventVendorChecklistItem,
     EventVendorChecklistResponse,
+    GuestSessionResponse,
     HealthResponse,
     IdeaCategory,
     MilestoneStatusUpdateRequest,
@@ -86,6 +88,7 @@ from app.auth import (
     AuthenticationError,
     AuthenticatedUser,
     GuestUser,
+    create_guest_session_token,
     get_current_user,
     get_current_user_or_guest,
 )
@@ -183,6 +186,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.middleware("http")
+    async def guest_session_cookie_middleware(request: Request, call_next: Any) -> Any:
+        response = await call_next(request)
+        new_guest_token = getattr(request.state, "new_guest_token", None)
+        if new_guest_token:
+            response.headers["X-Guest-Session-ID"] = new_guest_token
+            response.set_cookie(
+                key="planproof_guest_session",
+                value=new_guest_token,
+                max_age=app_settings.guest_session_ttl_seconds,
+                httponly=True,
+                samesite="lax",
+                path="/",
+            )
+        return response
 
     def sanitize_error_message(message: str) -> str:
         """Sanitize error messages to ensure absolute paths or secrets are never exposed."""
@@ -516,6 +535,64 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             allow_guest_mode=active_settings.allow_guest_mode,
             storage_backend=active_settings.storage_backend,
             configured=is_configured,
+        )
+
+    @app.post(
+        "/api/v1/auth/guest-session",
+        response_model=GuestSessionResponse,
+        tags=["Authentication"],
+        summary="Issue a cryptographically signed guest session token",
+        responses={
+            401: {"model": StandardErrorResponse, "description": "Guest access rejected"},
+        },
+    )
+    @app.get(
+        "/api/v1/auth/guest-session",
+        response_model=GuestSessionResponse,
+        tags=["Authentication"],
+        summary="Retrieve or issue a cryptographically signed guest session token",
+        responses={
+            401: {"model": StandardErrorResponse, "description": "Guest access rejected"},
+        },
+    )
+    async def issue_guest_session(
+        request: Request,
+        response: Response,
+        current_settings: Settings = Depends(get_settings),
+    ) -> GuestSessionResponse:
+        """Issue an isolated, cryptographically signed guest session token.
+
+        Rejects issuance if storage_backend is 'postgres' or if in production without guest mode.
+        """
+        active_settings = getattr(request.app.state, "settings", current_settings)
+        if active_settings.storage_backend == "postgres":
+            raise AuthenticationError(
+                "AUTHENTICATION_REQUIRED",
+                "Guest sessions cannot be issued when PostgreSQL storage is enabled.",
+            )
+        if active_settings.app_env == "production" and not active_settings.allow_guest_mode:
+            raise AuthenticationError(
+                "AUTHENTICATION_REQUIRED",
+                "Guest access is disabled in production. Please sign in.",
+            )
+
+        token, session_id, expires_at = create_guest_session_token(
+            ttl_seconds=active_settings.guest_session_ttl_seconds,
+            secret=active_settings.get_guest_session_secret_bytes(),
+        )
+        response.headers["X-Guest-Session-ID"] = token
+        response.set_cookie(
+            key="planproof_guest_session",
+            value=token,
+            max_age=active_settings.guest_session_ttl_seconds,
+            httponly=True,
+            samesite="lax",
+            path="/",
+        )
+        return GuestSessionResponse(
+            guest_session_token=token,
+            session_id=session_id,
+            expires_at=expires_at,
         )
 
     def get_ai_orchestrator(

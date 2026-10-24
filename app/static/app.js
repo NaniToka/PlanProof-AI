@@ -36,6 +36,7 @@ const state = {
   isLoadingRecoveries: false,
   readiness: null,
   isLoadingReadiness: false,
+  authEpoch: 0,
 };
 
 // ==============================================================================
@@ -47,19 +48,90 @@ const AuthManager = {
   config: null,
   currentUser: null,
   currentSession: null,
-  ephemeralGuestId: null,
+  guestSessionToken: null,
+  refreshPromise: null,
   authMode: 'login',
+  isInitializing: false,
   isInitialized: false,
+  authSubscription: null,
 
   getGuestSessionId() {
-    if (!this.ephemeralGuestId) {
-      if (typeof crypto !== 'undefined' && crypto.randomUUID) {
-        this.ephemeralGuestId = crypto.randomUUID();
-      } else {
-        this.ephemeralGuestId = 'guest-' + Math.random().toString(36).substring(2, 15);
+    return this.getGuestSessionToken();
+  },
+
+  getGuestSessionToken() {
+    if (!this.guestSessionToken) {
+      try {
+        this.guestSessionToken = sessionStorage.getItem('planproof_guest_session_token') || null;
+      } catch (e) {
+        this.guestSessionToken = null;
       }
     }
-    return this.ephemeralGuestId;
+    return this.guestSessionToken;
+  },
+
+  setGuestSessionToken(token) {
+    this.guestSessionToken = token;
+    try {
+      if (token) {
+        sessionStorage.setItem('planproof_guest_session_token', token);
+      } else {
+        sessionStorage.removeItem('planproof_guest_session_token');
+      }
+    } catch (e) {}
+  },
+
+  async ensureGuestSession() {
+    if (this.isAuthenticated()) {
+      return null;
+    }
+    let token = this.getGuestSessionToken();
+    if (!token) {
+      try {
+        const res = await fetch(`${API.baseUrl}/api/v1/auth/guest-session`, {
+          method: 'POST',
+          headers: { 'Accept': 'application/json' },
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data?.guest_session_token) {
+            token = data.guest_session_token;
+            this.setGuestSessionToken(token);
+          }
+        }
+      } catch (e) {
+        // Fallback: server auto-issues on unauthenticated requests
+      }
+    }
+    return token;
+  },
+
+  async refreshSession() {
+    if (this.refreshPromise) {
+      return this.refreshPromise;
+    }
+    if (!this.supabaseClient) {
+      return null;
+    }
+    this.refreshPromise = (async () => {
+      try {
+        const { data, error } = await this.supabaseClient.auth.refreshSession();
+        if (error || !data?.session) {
+          await this.handleSessionExpired();
+          return null;
+        }
+        this.currentSession = data.session;
+        this.currentUser = data.session.user;
+        state.currentUser = this.currentUser;
+        return data.session;
+      } catch (err) {
+        await this.handleSessionExpired();
+        return null;
+      } finally {
+        this.refreshPromise = null;
+      }
+    })();
+    return this.refreshPromise;
   },
 
   isAuthenticated() {
@@ -67,6 +139,10 @@ const AuthManager = {
   },
 
   async init() {
+    if (this.isInitialized || this.isInitializing) {
+      return;
+    }
+    this.isInitializing = true;
     try {
       this.config = await API.getAuthConfig();
       state.authConfig = this.config;
@@ -83,6 +159,13 @@ const AuthManager = {
       window.supabase?.createClient
     ) {
       try {
+        if (this.authSubscription) {
+          try {
+            this.authSubscription.unsubscribe();
+          } catch (e) {}
+          this.authSubscription = null;
+        }
+
         this.supabaseClient = window.supabase.createClient(
           this.config.supabase_url,
           this.config.supabase_anon_key,
@@ -102,9 +185,12 @@ const AuthManager = {
           state.currentUser = this.currentUser;
         }
 
-        this.supabaseClient.auth.onAuthStateChange(async (event, session) => {
-          await this.handleAuthStateChange(event, session);
-        });
+        const { data: authListener } = this.supabaseClient.auth.onAuthStateChange(
+          async (event, session) => {
+            await this.handleAuthStateChange(event, session);
+          }
+        );
+        this.authSubscription = authListener?.subscription || null;
       } catch (err) {
         console.error('Failed to initialize Supabase client:', err.message);
       }
@@ -112,6 +198,7 @@ const AuthManager = {
       this.showUnconfiguredBanner();
     }
 
+    this.isInitializing = false;
     this.isInitialized = true;
     this.updateUI();
   },
@@ -146,6 +233,7 @@ const AuthManager = {
   },
 
   clearUserState() {
+    state.authEpoch = (state.authEpoch || 0) + 1;
     state.currentEventId = null;
     state.currentEvent = null;
     state.events = [];
@@ -158,6 +246,15 @@ const AuthManager = {
     try {
       sessionStorage.removeItem('planproof_active_event_id');
     } catch (e) {}
+
+    const select = document.getElementById('event-select-dropdown');
+    if (select) {
+      select.innerHTML = '<option value="" disabled selected>No events loaded</option>';
+    }
+    const currentName = document.getElementById('current-event-name');
+    if (currentName) currentName.textContent = 'No Event Selected';
+    const currentBadge = document.getElementById('current-event-badge');
+    if (currentBadge) currentBadge.textContent = 'None';
   },
 
   async signIn(email, password) {
@@ -279,9 +376,9 @@ const API = {
     if (token) {
       headers['Authorization'] = `Bearer ${token}`;
     } else {
-      const guestId = AuthManager.getGuestSessionId();
-      if (guestId) {
-        headers['X-Guest-Session-ID'] = guestId;
+      const guestToken = await AuthManager.ensureGuestSession();
+      if (guestToken) {
+        headers['X-Guest-Session-ID'] = guestToken;
       }
     }
 
@@ -294,19 +391,19 @@ const API = {
       const response = await fetch(url, config);
       const data = await response.json().catch(() => null);
 
+      // Store server-issued guest session token if returned in header
+      const returnedGuestToken = response.headers?.get ? response.headers.get('X-Guest-Session-ID') : null;
+      if (returnedGuestToken && !token) {
+        AuthManager.setGuestSessionToken(returnedGuestToken);
+      }
+
       if (response.status === 401) {
-        // Attempt single token refresh if session exists and not already retrying
+        // Attempt single deduplicated token refresh if session exists and not already retrying
         if (token && !isRetry && AuthManager.supabaseClient) {
-          try {
-            const { data: refreshData, error: refreshErr } =
-              await AuthManager.supabaseClient.auth.refreshSession();
-            if (!refreshErr && refreshData?.session?.access_token) {
-              return await this.request(path, options, true);
-            }
-          } catch (refreshErr) {
-            // Refresh failed
+          const refreshedSession = await AuthManager.refreshSession();
+          if (refreshedSession?.access_token) {
+            return await this.request(path, options, true);
           }
-          await AuthManager.handleSessionExpired();
         }
 
         const errorMsg =
@@ -329,6 +426,10 @@ const API = {
       console.error(`API Error [${options.method || 'GET'} ${path}]:`, err.message || 'Request failed');
       throw err;
     }
+  },
+
+  getGuestSession() {
+    return this.request('/api/v1/auth/guest-session', { method: 'POST' });
   },
 
   getAuthConfig() {
@@ -3152,6 +3253,7 @@ function updateActiveEventBadge(profile) {
 }
 
 async function selectEvent(eventId) {
+  const epoch = state.authEpoch;
   state.currentEventId = eventId;
   state.selectedRecoveryId = null;
   state.selectedRecovery = null;
@@ -3165,21 +3267,25 @@ async function selectEvent(eventId) {
 
   try {
     const profile = await API.getEvent(eventId);
+    if (epoch !== state.authEpoch) return;
     state.currentEvent = profile;
     updateActiveEventBadge(profile);
     switchView(state.activeView);
   } catch (err) {
+    if (epoch !== state.authEpoch) return;
     showToast(`Failed to select event ${eventId}`, 'error');
   }
 }
 
 
 async function loadEventsList() {
+  const epoch = state.authEpoch;
   const select = document.getElementById('event-select-dropdown');
   if (!select) return;
 
   try {
     const res = await API.listEvents();
+    if (epoch !== state.authEpoch) return;
     state.events = res.events || [];
 
     select.innerHTML = '';
@@ -3216,6 +3322,7 @@ async function loadEventsList() {
     updateActiveEventBadge(state.currentEvent);
 
   } catch (err) {
+    if (epoch !== state.authEpoch) return;
     console.error('Error loading events:', err);
     select.innerHTML = '<option value="" disabled>Error loading events</option>';
   }

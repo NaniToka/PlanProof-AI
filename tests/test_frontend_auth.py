@@ -19,6 +19,7 @@ import jwt
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
+from app.auth import create_guest_session_token
 from app.config import Settings
 from app.main import create_app
 
@@ -425,3 +426,162 @@ def test_malformed_authorization_headers_rejected() -> None:
         # 3. Malformed garbage token
         res3 = client.get("/api/v1/events", headers={"Authorization": "Bearer not-a-jwt"})
         assert res3.status_code == 401
+
+
+# ==============================================================================
+# 4. Step 3A Audit Tests: Guest CRUD Isolation, Race Conditions, Refresh Storms
+# ==============================================================================
+
+
+def test_guest_cross_tenant_crud_isolation() -> None:
+    """Guest A cannot read, update, or delete Guest B's data or child resources."""
+    token_a, _, _ = create_guest_session_token(secret=TEST_SECRET)
+    token_b, _, _ = create_guest_session_token(secret=TEST_SECRET)
+
+    settings = Settings(
+        supabase_jwt_secret=SecretStr(TEST_SECRET),
+        allow_guest_mode=True,
+        storage_backend="memory",
+    )
+    app = create_app(settings=settings)
+
+    with TestClient(app) as client:
+        # Guest A creates an event
+        payload = {
+            "event_type": "birthday",
+            "city": "Mumbai",
+            "city_tier": "metro",
+            "event_date": "2027-08-20",
+            "total_budget_inr": 300000,
+            "guest_count": 50,
+            "event_name": "Guest A Party",
+        }
+        res_create = client.post(
+            "/api/v1/events",
+            json=payload,
+            headers={"X-Guest-Session-ID": token_a},
+        )
+        assert res_create.status_code == 201
+        event_id = res_create.json()["event_id"]
+
+        # Guest B cannot read Guest A's event -> 404
+        res_read_b = client.get(
+            f"/api/v1/events/{event_id}",
+            headers={"X-Guest-Session-ID": token_b},
+        )
+        assert res_read_b.status_code == 404
+
+        # Guest B cannot update Guest A's event -> 404
+        res_patch_b = client.patch(
+            f"/api/v1/events/{event_id}",
+            json={"event_name": "Hacked Name"},
+            headers={"X-Guest-Session-ID": token_b},
+        )
+        assert res_patch_b.status_code == 404
+
+        # Guest B cannot delete Guest A's event -> 404
+        res_delete_b = client.delete(
+            f"/api/v1/events/{event_id}",
+            headers={"X-Guest-Session-ID": token_b},
+        )
+        assert res_delete_b.status_code == 404
+
+        # Guest B cannot read Guest A's child resources -> 404
+        res_budget_b = client.get(
+            f"/api/v1/events/{event_id}/budget",
+            headers={"X-Guest-Session-ID": token_b},
+        )
+        assert res_budget_b.status_code == 404
+
+        # Guest A CAN read, update, and delete their own event
+        res_read_a = client.get(
+            f"/api/v1/events/{event_id}",
+            headers={"X-Guest-Session-ID": token_a},
+        )
+        assert res_read_a.status_code == 200
+
+        res_patch_a = client.patch(
+            f"/api/v1/events/{event_id}",
+            json={"event_name": "Updated Name"},
+            headers={"X-Guest-Session-ID": token_a},
+        )
+        assert res_patch_a.status_code == 200
+
+        res_delete_a = client.delete(
+            f"/api/v1/events/{event_id}",
+            headers={"X-Guest-Session-ID": token_a},
+        )
+        assert res_delete_a.status_code == 200
+
+
+def test_unauthenticated_requests_receive_isolated_guest_identity() -> None:
+    """Two independent clients without headers get isolated sessions and never share data."""
+    settings = Settings(
+        supabase_jwt_secret=SecretStr(TEST_SECRET),
+        allow_guest_mode=True,
+        storage_backend="memory",
+    )
+    app = create_app(settings=settings)
+
+    # Client 1 creates an event
+    with TestClient(app) as client_1:
+        res1 = client_1.post(
+            "/api/v1/events",
+            json={
+                "event_type": "community_event",
+                "city": "Pune",
+                "city_tier": "tier2",
+                "event_date": "2027-10-15",
+                "total_budget_inr": 400000,
+                "guest_count": 80,
+                "event_name": "Client 1 Silver Jubilee",
+            },
+        )
+        assert res1.status_code == 201
+        event_1_id = res1.json()["event_id"]
+
+        # Client 1 can list and see their event
+        list1 = client_1.get("/api/v1/events")
+        assert list1.status_code == 200
+        assert any(e["event_id"] == event_1_id for e in list1.json()["events"])
+
+    # Client 2 (independent cookie jar and session) cannot see Client 1's event
+    with TestClient(app) as client_2:
+        list2 = client_2.get("/api/v1/events")
+        assert list2.status_code == 200
+        assert not any(e["event_id"] == event_1_id for e in list2.json()["events"])
+
+        get2 = client_2.get(f"/api/v1/events/{event_1_id}")
+        assert get2.status_code == 404
+
+
+def test_late_response_race_condition_protection_contract() -> None:
+    """Frontend app.js implements authEpoch to prevent late responses repopulating previous account."""
+    app = create_app()
+    with TestClient(app) as client:
+        res = client.get("/static/app.js")
+        assert res.status_code == 200
+        js = res.text
+
+        # Verify epoch state management
+        assert "authEpoch:" in js
+        assert "state.authEpoch = (state.authEpoch || 0) + 1;" in js
+
+        # Verify async operations check epoch before state mutation
+        assert "epoch !== state.authEpoch" in js
+
+
+def test_concurrent_401_refresh_deduplication_contract() -> None:
+    """Frontend app.js deduplicates concurrent 401 refresh calls via shared refreshPromise."""
+    app = create_app()
+    with TestClient(app) as client:
+        res = client.get("/static/app.js")
+        assert res.status_code == 200
+        js = res.text
+
+        # Verify shared refresh promise deduplication
+        assert "refreshPromise:" in js
+        assert "if (this.refreshPromise)" in js
+        assert "this.refreshPromise = null;" in js
+        assert "AuthManager.refreshSession()" in js
+

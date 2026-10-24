@@ -2021,6 +2021,26 @@ class AuthConfigResponse(BaseModel):
     )
 
 
+class GuestSessionResponse(BaseModel):
+    """Server-issued ephemeral guest session response.
+
+    Provides a cryptographically signed guest session token with expiration and unique session UUID.
+    """
+
+    guest_session_token: str = Field(
+        ...,
+        description="Cryptographically signed, tamper-evident guest session token (HMAC-SHA256)",
+    )
+    session_id: UUID = Field(
+        ...,
+        description="Unique ephemeral guest session UUID identifier",
+    )
+    expires_at: datetime = Field(
+        ...,
+        description="Expiration timestamp in UTC",
+    )
+
+
 # ==============================================================================
 # 7. AI Operation & Fallback Result Envelopes
 # ==============================================================================

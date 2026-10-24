@@ -403,7 +403,7 @@ async def test_get_current_user_or_guest_allows_guest_in_memory() -> None:
     assert isinstance(user, GuestUser)
     assert user.is_authenticated is False
     assert user.is_guest is True
-    assert user.user_id is None
+    assert isinstance(user.user_id, UUID)
 
 
 @pytest.mark.asyncio
