@@ -108,6 +108,15 @@
             <span id="ai-status-text">AI: Checking</span>
           </div>
 
+          <!-- Supabase Auth Account Indicator & Action -->
+          <div class="auth-status-container" id="auth-status-container">
+            <div class="auth-status-pill guest" id="auth-status-badge" title="Session State: Guest / Ephemeral">
+              <span class="auth-status-dot guest" id="auth-status-dot"></span>
+              <span id="auth-user-email" class="auth-user-label">Guest Mode</span>
+            </div>
+            <button class="btn btn-secondary btn-sm" id="btn-auth-action" type="button">Sign In</button>
+          </div>
+
           <button class="btn btn-cyan btn-sm" id="btn-open-create-event" type="button">
             <span>+</span>
             <span>New Event</span>
@@ -117,6 +126,17 @@
 
       <!-- View Sections Viewport -->
       <main class="content-area" id="main-viewport" role="main">
+
+        <!-- Unconfigured Setup Notice Banner -->
+        <div class="auth-unconfigured-banner" id="auth-unconfigured-banner" style="display: none;" role="status">
+          <div class="banner-content">
+            <span class="banner-icon" aria-hidden="true">💡</span>
+            <div class="banner-text">
+              <strong>Running in Guest / Demo Mode</strong> — In-memory ephemeral storage only. To enable persistent cloud user accounts, configure <code>SUPABASE_URL</code> and <code>SUPABASE_ANON_KEY</code> in your environment.
+            </div>
+            <button type="button" class="btn-close-banner" id="btn-dismiss-auth-banner" aria-label="Dismiss banner">×</button>
+          </div>
+        </div>
 
         <!-- 1. OVERVIEW VIEW -->
         <section id="view-overview" class="view-section active" aria-labelledby="overview-heading">
@@ -392,8 +412,57 @@
     </div>
   </div>
 
+  <!-- MODAL: AUTHENTICATION (SIGN IN & SIGN UP) -->
+  <div class="modal-backdrop" id="modal-auth" role="dialog" aria-modal="true" aria-labelledby="tab-auth-login">
+    <div class="modal-content" style="max-width: 440px;">
+      <div class="modal-header">
+        <div class="auth-modal-header-tabs" role="tablist">
+          <button type="button" class="auth-tab-btn active" id="tab-auth-login" role="tab" aria-selected="true">Sign In</button>
+          <button type="button" class="auth-tab-btn" id="tab-auth-signup" role="tab" aria-selected="false">Create Account</button>
+        </div>
+        <button type="button" class="btn-close-modal" id="btn-close-auth-modal" aria-label="Close dialog">×</button>
+      </div>
+      <form id="form-auth">
+        <div class="modal-body">
+          <div id="auth-alert" class="auth-alert" style="display: none;" role="alert"></div>
+
+          <div class="form-group">
+            <label for="auth-email" class="form-label">Email Address *</label>
+            <input type="email" id="auth-email" class="form-input" placeholder="name@example.com" required autocomplete="email">
+          </div>
+
+          <div class="form-group">
+            <label for="auth-password" class="form-label">Password *</label>
+            <input type="password" id="auth-password" class="form-input" placeholder="••••••••" required minlength="6" autocomplete="current-password">
+            <span class="auth-password-hint" id="auth-password-hint" style="display: none;">
+              Password must be at least 6 characters.
+            </span>
+          </div>
+
+          <div id="auth-unconfigured-notice" class="auth-unconfigured-notice" style="display: none;">
+            <span class="notice-icon" aria-hidden="true">⚠️</span>
+            <div class="notice-text">
+              <strong>Supabase Auth not configured.</strong><br>
+              To enable cloud accounts and persistent storage, configure <code>SUPABASE_URL</code> and <code>SUPABASE_ANON_KEY</code> in your backend <code>.env</code> file.
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer" style="flex-direction: column; align-items: stretch; gap: 0.75rem;">
+          <button type="submit" class="btn btn-cyan btn-block" id="btn-auth-submit">Sign In</button>
+          <div class="auth-switch-prompt">
+            <span id="auth-switch-text">Don't have an account?</span>
+            <button type="button" class="btn-text-link" id="btn-switch-auth-mode">Create Account</button>
+          </div>
+        </div>
+      </form>
+    </div>
+  </div>
+
   <!-- Toast Notifications Container -->
   <div class="toast-container" id="toast-container" aria-live="polite" aria-atomic="true"></div>
+
+  <!-- Pinned Official Supabase Client (UMD bundle) -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.48.1/dist/umd/supabase.min.js"></script>
 
   <!-- Client-side Logic -->
   <script src="/static/app.js"></script>

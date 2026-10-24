@@ -20,6 +20,7 @@ from app.schemas import (
     AIResultEnvelope,
     AIStatusResponse,
     AITask,
+    AuthConfigResponse,
     BudgetCalculateRequest,
     BudgetCalculationResponse,
     BudgetRebalanceRequest,
@@ -488,6 +489,33 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return JSONResponse(
             status_code=status.HTTP_200_OK,
             content=repo.get_status_summary().model_dump(),
+        )
+
+    @app.get(
+        "/api/v1/auth/config",
+        response_model=AuthConfigResponse,
+        tags=["Authentication"],
+        summary="Retrieve public client authentication configuration",
+    )
+    async def auth_config(
+        request: Request,
+        current_settings: Settings = Depends(get_settings),
+    ) -> AuthConfigResponse:
+        """Return safe, public client configuration for Supabase JS initialization.
+
+        Exposes only client-safe public keys and URLs (SUPABASE_URL, SUPABASE_ANON_KEY).
+        Never exposes SUPABASE_JWT_SECRET, DATABASE_URL, service-role keys, or database credentials.
+        """
+        active_settings = getattr(request.app.state, "settings", current_settings)
+        url = active_settings.supabase_url
+        anon_key = active_settings.get_supabase_anon_key_value()
+        is_configured = bool(url and anon_key)
+        return AuthConfigResponse(
+            supabase_url=url if is_configured else None,
+            supabase_anon_key=anon_key if is_configured else None,
+            allow_guest_mode=active_settings.allow_guest_mode,
+            storage_backend=active_settings.storage_backend,
+            configured=is_configured,
         )
 
     def get_ai_orchestrator(

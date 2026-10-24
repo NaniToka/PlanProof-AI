@@ -2279,6 +2279,234 @@ body {
 }
 
 /* ==============================================================================
+   8B. Supabase Authentication UI
+   ============================================================================== */
+.auth-status-container {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.auth-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.4rem 0.85rem;
+  border-radius: var(--radius-full);
+  font-size: 0.775rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  background: var(--color-surface-muted);
+  border: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: all var(--transition-fast);
+}
+
+.auth-status-pill.guest {
+  background: var(--color-surface-muted);
+  border-color: var(--color-border);
+  color: var(--color-text-muted);
+}
+
+.auth-status-pill.authenticated {
+  background: rgba(114, 47, 55, 0.08);
+  border-color: rgba(114, 47, 55, 0.3);
+  color: var(--color-deep-burgundy);
+}
+
+.auth-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: currentColor;
+}
+
+.auth-status-dot.guest {
+  background: var(--color-text-muted);
+}
+
+.auth-status-dot.online {
+  background: #2E7D32;
+  box-shadow: 0 0 6px rgba(46, 125, 50, 0.4);
+}
+
+.auth-user-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Unconfigured Setup Banner */
+.auth-unconfigured-banner {
+  background: var(--color-surface);
+  border: 1px solid var(--color-mocha-cream);
+  border-left: 4px solid var(--color-cosmic-latte);
+  border-radius: var(--radius-md);
+  padding: 0.85rem 1.25rem;
+  margin-bottom: 1.5rem;
+  box-shadow: var(--shadow-sm);
+  animation: fadeIn 0.3s ease;
+}
+
+.auth-unconfigured-banner .banner-content {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.auth-unconfigured-banner .banner-icon {
+  font-size: 1.25rem;
+  flex-shrink: 0;
+}
+
+.auth-unconfigured-banner .banner-text {
+  font-size: 0.875rem;
+  color: var(--color-text);
+  line-height: 1.45;
+  flex: 1;
+}
+
+.auth-unconfigured-banner .banner-text code {
+  background: var(--color-surface-muted);
+  border: 1px solid var(--color-border);
+  padding: 0.15rem 0.35rem;
+  border-radius: var(--radius-sm);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.8rem;
+  color: var(--color-deep-burgundy);
+}
+
+.btn-close-banner {
+  background: transparent;
+  border: none;
+  font-size: 1.35rem;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  padding: 0.2rem;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+}
+
+.btn-close-banner:hover {
+  color: var(--color-text);
+}
+
+/* Auth Modal Tabs & Elements */
+.auth-modal-header-tabs {
+  display: flex;
+  gap: 0.35rem;
+  background: var(--color-surface-muted);
+  padding: 0.25rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+}
+
+.auth-tab-btn {
+  background: transparent;
+  border: none;
+  padding: 0.45rem 1rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.auth-tab-btn:hover {
+  color: var(--color-text);
+}
+
+.auth-tab-btn.active {
+  background: var(--color-surface);
+  color: var(--color-deep-burgundy);
+  font-weight: 700;
+  box-shadow: var(--shadow-xs);
+}
+
+.auth-alert {
+  padding: 0.75rem 1rem;
+  border-radius: var(--radius-md);
+  font-size: 0.85rem;
+  line-height: 1.4;
+  margin-bottom: 1.25rem;
+}
+
+.auth-alert.error {
+  background: var(--color-danger-bg);
+  border: 1px solid var(--color-danger-border);
+  color: var(--color-danger);
+}
+
+.auth-alert.success {
+  background: #E8F5E9;
+  border: 1px solid #C8E6C9;
+  color: #2E7D32;
+}
+
+.auth-alert.info {
+  background: rgba(114, 47, 55, 0.08);
+  border: 1px solid rgba(114, 47, 55, 0.2);
+  color: var(--color-deep-burgundy);
+}
+
+.auth-alert.loading {
+  background: var(--color-surface-muted);
+  border: 1px solid var(--color-border);
+  color: var(--color-text);
+}
+
+.auth-unconfigured-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  background: #FFF8E1;
+  border: 1px solid #FFE082;
+  border-radius: var(--radius-md);
+  padding: 0.85rem 1rem;
+  margin-top: 1rem;
+  font-size: 0.825rem;
+  color: #5D4037;
+  line-height: 1.4;
+}
+
+.auth-unconfigured-notice .notice-icon {
+  font-size: 1.2rem;
+  flex-shrink: 0;
+}
+
+.auth-unconfigured-notice code {
+  background: rgba(0, 0, 0, 0.05);
+  padding: 0.1rem 0.3rem;
+  border-radius: var(--radius-sm);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.75rem;
+  color: var(--color-deep-burgundy);
+}
+
+.btn-block {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.auth-switch-prompt {
+  text-align: center;
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+}
+
+/* ==============================================================================
    9. Reduced Motion Support
    ============================================================================== */
 @media (prefers-reduced-motion: reduce) {

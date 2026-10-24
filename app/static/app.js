@@ -10,6 +10,8 @@
 // ==============================================================================
 
 const state = {
+  currentUser: null,
+  authConfig: null,
   currentEventId: null,
   currentEvent: null,
   events: [],
@@ -37,37 +39,300 @@ const state = {
 };
 
 // ==============================================================================
-// 2. API Communication Layer
+// 2. Supabase Authentication Manager
+// ==============================================================================
+
+const AuthManager = {
+  supabaseClient: null,
+  config: null,
+  currentUser: null,
+  currentSession: null,
+  ephemeralGuestId: null,
+  authMode: 'login',
+  isInitialized: false,
+
+  getGuestSessionId() {
+    if (!this.ephemeralGuestId) {
+      if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+        this.ephemeralGuestId = crypto.randomUUID();
+      } else {
+        this.ephemeralGuestId = 'guest-' + Math.random().toString(36).substring(2, 15);
+      }
+    }
+    return this.ephemeralGuestId;
+  },
+
+  isAuthenticated() {
+    return !!(this.currentSession && this.currentUser);
+  },
+
+  async init() {
+    try {
+      this.config = await API.getAuthConfig();
+      state.authConfig = this.config;
+    } catch (err) {
+      console.warn('Failed to load auth config from server:', err.message);
+      this.config = { configured: false, allow_guest_mode: true, storage_backend: 'memory' };
+      state.authConfig = this.config;
+    }
+
+    if (
+      this.config?.configured &&
+      this.config.supabase_url &&
+      this.config.supabase_anon_key &&
+      window.supabase?.createClient
+    ) {
+      try {
+        this.supabaseClient = window.supabase.createClient(
+          this.config.supabase_url,
+          this.config.supabase_anon_key,
+          {
+            auth: {
+              persistSession: true,
+              autoRefreshToken: true,
+              detectSessionInUrl: true,
+            },
+          }
+        );
+
+        const { data, error } = await this.supabaseClient.auth.getSession();
+        if (!error && data?.session) {
+          this.currentSession = data.session;
+          this.currentUser = data.session.user;
+          state.currentUser = this.currentUser;
+        }
+
+        this.supabaseClient.auth.onAuthStateChange(async (event, session) => {
+          await this.handleAuthStateChange(event, session);
+        });
+      } catch (err) {
+        console.error('Failed to initialize Supabase client:', err.message);
+      }
+    } else {
+      this.showUnconfiguredBanner();
+    }
+
+    this.isInitialized = true;
+    this.updateUI();
+  },
+
+  async handleAuthStateChange(event, session) {
+    const previousUserId = this.currentUser?.id;
+    this.currentSession = session;
+    this.currentUser = session?.user || null;
+    state.currentUser = this.currentUser;
+
+    if (event === 'SIGNED_OUT' || !session) {
+      this.clearUserState();
+      this.updateUI();
+      showToast('Signed out successfully.', 'info');
+      await loadEventsList();
+      switchView(state.activeView);
+    } else if (event === 'SIGNED_IN') {
+      const isDifferentUser = previousUserId && previousUserId !== session.user.id;
+      if (isDifferentUser || !previousUserId) {
+        this.clearUserState();
+      }
+      this.updateUI();
+      closeAuthModal();
+      showToast(`Signed in as ${session.user.email}`, 'success');
+      await loadEventsList();
+      switchView(state.activeView);
+    } else if (event === 'TOKEN_REFRESHED') {
+      this.currentSession = session;
+      this.currentUser = session.user;
+      state.currentUser = this.currentUser;
+    }
+  },
+
+  clearUserState() {
+    state.currentEventId = null;
+    state.currentEvent = null;
+    state.events = [];
+    state.cache = {};
+    state.crisisResult = null;
+    state.recoveryRecords = [];
+    state.selectedRecoveryId = null;
+    state.selectedRecovery = null;
+    state.readiness = null;
+    try {
+      sessionStorage.removeItem('planproof_active_event_id');
+    } catch (e) {}
+  },
+
+  async signIn(email, password) {
+    if (!this.supabaseClient) {
+      throw new Error(
+        'Supabase Auth is not configured on the server. Please check your .env configuration.'
+      );
+    }
+    const { data, error } = await this.supabaseClient.auth.signInWithPassword({
+      email,
+      password,
+    });
+    if (error) {
+      throw error;
+    }
+    return data;
+  },
+
+  async signUp(email, password) {
+    if (!this.supabaseClient) {
+      throw new Error(
+        'Supabase Auth is not configured on the server. Please check your .env configuration.'
+      );
+    }
+    const { data, error } = await this.supabaseClient.auth.signUp({
+      email,
+      password,
+    });
+    if (error) {
+      throw error;
+    }
+    return data;
+  },
+
+  async signOut() {
+    if (this.supabaseClient) {
+      await this.supabaseClient.auth.signOut();
+    }
+    this.currentSession = null;
+    this.currentUser = null;
+    state.currentUser = null;
+    this.clearUserState();
+    this.updateUI();
+    showToast('Signed out successfully.', 'info');
+    await loadEventsList();
+    switchView(state.activeView);
+  },
+
+  async handleSessionExpired() {
+    this.currentSession = null;
+    this.currentUser = null;
+    state.currentUser = null;
+    this.clearUserState();
+    this.updateUI();
+    showToast('Your session has expired. Please sign in again.', 'warning');
+    openAuthModal('login');
+  },
+
+  updateUI() {
+    const badge = document.getElementById('auth-status-badge');
+    const userLabel = document.getElementById('auth-user-email');
+    const dot = document.getElementById('auth-status-dot');
+    const actionBtn = document.getElementById('btn-auth-action');
+
+    if (!badge || !userLabel || !actionBtn) return;
+
+    if (this.isAuthenticated()) {
+      badge.className = 'auth-status-pill authenticated';
+      badge.title = `Signed in: ${this.currentUser.email} (Cloud Synced)`;
+      dot.className = 'auth-status-dot online';
+      userLabel.textContent = this.currentUser.email;
+      actionBtn.textContent = 'Log Out';
+      actionBtn.className = 'btn btn-secondary btn-sm';
+    } else {
+      badge.className = 'auth-status-pill guest';
+      badge.title = 'Session State: Guest / Ephemeral (in-memory)';
+      dot.className = 'auth-status-dot guest';
+      userLabel.textContent = 'Guest Mode';
+      actionBtn.textContent = 'Sign In';
+      actionBtn.className = 'btn btn-secondary btn-sm';
+    }
+  },
+
+  showUnconfiguredBanner() {
+    const banner = document.getElementById('auth-unconfigured-banner');
+    if (banner && (!this.config || !this.config.configured)) {
+      banner.style.display = 'block';
+    }
+  },
+};
+
+// ==============================================================================
+// 3. API Communication Layer
 // ==============================================================================
 
 const API = {
   baseUrl: '',
 
-  async request(path, options = {}) {
+  async request(path, options = {}, isRetry = false) {
     const url = `${this.baseUrl}${path}`;
     const defaultHeaders = {
       'Content-Type': 'application/json',
       'Accept': 'application/json',
     };
 
+    const headers = { ...defaultHeaders, ...options.headers };
+
+    // Attach Bearer token if session exists
+    let token = null;
+    if (AuthManager.supabaseClient) {
+      try {
+        const { data } = await AuthManager.supabaseClient.auth.getSession();
+        token = data?.session?.access_token || null;
+      } catch (e) {
+        // Safe fallback
+      }
+    }
+
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    } else {
+      const guestId = AuthManager.getGuestSessionId();
+      if (guestId) {
+        headers['X-Guest-Session-ID'] = guestId;
+      }
+    }
+
     const config = {
       ...options,
-      headers: { ...defaultHeaders, ...options.headers },
+      headers,
     };
 
     try {
       const response = await fetch(url, config);
       const data = await response.json().catch(() => null);
 
+      if (response.status === 401) {
+        // Attempt single token refresh if session exists and not already retrying
+        if (token && !isRetry && AuthManager.supabaseClient) {
+          try {
+            const { data: refreshData, error: refreshErr } =
+              await AuthManager.supabaseClient.auth.refreshSession();
+            if (!refreshErr && refreshData?.session?.access_token) {
+              return await this.request(path, options, true);
+            }
+          } catch (refreshErr) {
+            // Refresh failed
+          }
+          await AuthManager.handleSessionExpired();
+        }
+
+        const errorMsg =
+          data?.error?.message ||
+          data?.detail ||
+          'Authentication required or session expired';
+        throw new Error(errorMsg);
+      }
+
       if (!response.ok) {
-        const errorMsg = data?.error?.message || data?.detail || `HTTP ${response.status}: Request failed`;
+        const errorMsg =
+          data?.error?.message ||
+          data?.detail ||
+          `HTTP ${response.status}: Request failed`;
         throw new Error(errorMsg);
       }
       return data;
     } catch (err) {
-      console.error(`API Error [${options.method || 'GET'} ${path}]:`, err);
+      // Safe logging: never print tokens or secrets
+      console.error(`API Error [${options.method || 'GET'} ${path}]:`, err.message || 'Request failed');
       throw err;
     }
+  },
+
+  getAuthConfig() {
+    return this.request('/api/v1/auth/config');
   },
 
   getHealth() {
@@ -354,11 +619,14 @@ async function renderOverview() {
       <div class="card hero-event-banner">
         <div style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 1rem;">
           <div>
-            <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem;">
+            <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem; flex-wrap: wrap;">
               <span class="badge badge-cyan">${escapeHTML(profile.event_type.toUpperCase())}</span>
               <span class="badge badge-amethyst">${escapeHTML(profile.city_tier.toUpperCase())}</span>
               ${profile.city ? `<span class="badge badge-amethyst">📍 ${escapeHTML(profile.city)}</span>` : ''}
               <span class="badge badge-success">ID: ${escapeHTML(profile.event_id)}</span>
+              ${AuthManager.isAuthenticated()
+                ? `<span class="badge" style="background: rgba(46, 125, 50, 0.12); color: #2E7D32; border: 1px solid rgba(46, 125, 50, 0.3);">☁️ Cloud Synced</span>`
+                : `<span class="badge" style="background: rgba(114, 47, 55, 0.08); color: var(--color-deep-burgundy); border: 1px solid rgba(114, 47, 55, 0.25);">🏷️ Guest / Demo (In-Memory)</span>`}
             </div>
             <h1 style="font-size: 1.75rem; font-weight: 800; letter-spacing: -0.02em; margin-bottom: 0.35rem; color: var(--color-text);">
               ${escapeHTML(profile.event_name || `${profile.event_type.charAt(0).toUpperCase() + profile.event_type.slice(1)} Plan`)}
@@ -1375,6 +1643,86 @@ function openCreateEventModal() {
 function closeCreateEventModal() {
   const modal = document.getElementById('modal-create-event');
   if (modal) modal.classList.remove('open');
+}
+
+function openAuthModal(mode = 'login') {
+  const modal = document.getElementById('modal-auth');
+  if (!modal) return;
+
+  setAuthModalMode(mode);
+  modal.classList.add('open');
+  document.getElementById('auth-email')?.focus();
+}
+
+function closeAuthModal() {
+  const modal = document.getElementById('modal-auth');
+  if (modal) {
+    modal.classList.remove('open');
+  }
+  const passwordInput = document.getElementById('auth-password');
+  if (passwordInput) passwordInput.value = '';
+  setAuthAlert(null);
+}
+
+function setAuthModalMode(mode) {
+  AuthManager.authMode = mode;
+  const isLogin = mode === 'login';
+
+  const tabLogin = document.getElementById('tab-auth-login');
+  const tabSignup = document.getElementById('tab-auth-signup');
+  const submitBtn = document.getElementById('btn-auth-submit');
+  const switchPrompt = document.getElementById('auth-switch-text');
+  const switchBtn = document.getElementById('btn-switch-auth-mode');
+  const passwordHint = document.getElementById('auth-password-hint');
+  const unconfiguredNotice = document.getElementById('auth-unconfigured-notice');
+
+  if (tabLogin && tabSignup) {
+    tabLogin.classList.toggle('active', isLogin);
+    tabLogin.setAttribute('aria-selected', isLogin ? 'true' : 'false');
+    tabSignup.classList.toggle('active', !isLogin);
+    tabSignup.setAttribute('aria-selected', !isLogin ? 'true' : 'false');
+  }
+
+  if (submitBtn) {
+    submitBtn.textContent = isLogin ? 'Sign In' : 'Create Account';
+    submitBtn.disabled = false;
+  }
+
+  if (switchPrompt && switchBtn) {
+    switchPrompt.textContent = isLogin ? "Don't have an account?" : 'Already have an account?';
+    switchBtn.textContent = isLogin ? 'Create Account' : 'Sign In';
+  }
+
+  if (passwordHint) {
+    passwordHint.style.display = isLogin ? 'none' : 'block';
+  }
+
+  if (unconfiguredNotice) {
+    const isUnconfigured = !AuthManager.config?.configured;
+    unconfiguredNotice.style.display = isUnconfigured ? 'flex' : 'none';
+    if (isUnconfigured && submitBtn) {
+      submitBtn.disabled = true;
+      submitBtn.title = 'Supabase credentials are not configured on the server.';
+    }
+  }
+
+  setAuthAlert(null);
+}
+
+function setAuthAlert(message, type = 'error') {
+  const alert = document.getElementById('auth-alert');
+  if (!alert) return;
+
+  if (!message) {
+    alert.style.display = 'none';
+    alert.textContent = '';
+    alert.className = 'auth-alert';
+    return;
+  }
+
+  alert.className = `auth-alert ${type}`;
+  alert.textContent = message;
+  alert.style.display = 'block';
 }
 
 function openEditVendorModal(itemId) {
@@ -2952,6 +3300,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       closeCreateEventModal();
       closeVendorModal();
       closeSaveRecoveryModal();
+      closeAuthModal();
     }
   });
 
@@ -3046,7 +3395,79 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
   document.getElementById('form-save-recovery')?.addEventListener('submit', handleSaveRecoverySubmit);
 
+  // 8B. Supabase Auth Modal & Triggers
+  document.getElementById('btn-auth-action')?.addEventListener('click', () => {
+    if (AuthManager.isAuthenticated()) {
+      AuthManager.signOut();
+    } else {
+      openAuthModal('login');
+    }
+  });
+
+  document.getElementById('btn-close-auth-modal')?.addEventListener('click', closeAuthModal);
+  document.getElementById('tab-auth-login')?.addEventListener('click', () => setAuthModalMode('login'));
+  document.getElementById('tab-auth-signup')?.addEventListener('click', () => setAuthModalMode('signup'));
+  document.getElementById('btn-switch-auth-mode')?.addEventListener('click', () => {
+    setAuthModalMode(AuthManager.authMode === 'login' ? 'signup' : 'login');
+  });
+
+  document.getElementById('modal-auth')?.addEventListener('click', (e) => {
+    if (e.target.id === 'modal-auth') {
+      closeAuthModal();
+    }
+  });
+
+  document.getElementById('btn-dismiss-auth-banner')?.addEventListener('click', () => {
+    const banner = document.getElementById('auth-unconfigured-banner');
+    if (banner) banner.style.display = 'none';
+  });
+
+  document.getElementById('form-auth')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const submitBtn = document.getElementById('btn-auth-submit');
+    const emailInput = document.getElementById('auth-email');
+    const passwordInput = document.getElementById('auth-password');
+
+    const email = emailInput?.value.trim();
+    const password = passwordInput?.value;
+
+    if (!email || !password) {
+      setAuthAlert('Please enter both email and password.', 'error');
+      return;
+    }
+
+    if (password.length < 6) {
+      setAuthAlert('Password must be at least 6 characters.', 'error');
+      return;
+    }
+
+    submitBtn.disabled = true;
+    const isLogin = AuthManager.authMode === 'login';
+    submitBtn.textContent = isLogin ? 'Signing in...' : 'Creating account...';
+    setAuthAlert(isLogin ? 'Authenticating with Supabase...' : 'Registering account...', 'loading');
+
+    try {
+      if (isLogin) {
+        await AuthManager.signIn(email, password);
+      } else {
+        const data = await AuthManager.signUp(email, password);
+        if (data?.session) {
+          // Immediately signed in
+        } else {
+          setAuthAlert('Registration initiated! Please check your email inbox to verify your account, then sign in.', 'success');
+          setAuthModalMode('login');
+        }
+      }
+    } catch (err) {
+      setAuthAlert(err.message || 'Authentication error. Please check your credentials.', 'error');
+    } finally {
+      submitBtn.disabled = false;
+      submitBtn.textContent = AuthManager.authMode === 'login' ? 'Sign In' : 'Create Account';
+    }
+  });
+
   // 9. Bootstrap Initial State
+  await AuthManager.init();
   await loadSystemStatus();
   await loadEventsList();
 

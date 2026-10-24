@@ -1992,6 +1992,35 @@ class AIStatusResponse(BaseModel):
     mode: str = Field(default="auto", description="Configured AI operation mode: auto, demo, gemini")
 
 
+class AuthConfigResponse(BaseModel):
+    """Safe public client authentication and storage configuration.
+
+    Exposes ONLY client-safe configuration (Supabase project URL and anonymous API key).
+    Never exposes backend secrets, JWT secrets, database connection strings, or service role keys.
+    """
+
+    supabase_url: str | None = Field(
+        default=None,
+        description="Public Supabase project URL for browser client initialization",
+    )
+    supabase_anon_key: str | None = Field(
+        default=None,
+        description="Public Supabase anonymous client API key",
+    )
+    allow_guest_mode: bool = Field(
+        default=True,
+        description="Whether guest/demo mode is permitted when unauthenticated",
+    )
+    storage_backend: str = Field(
+        default="memory",
+        description="Active backend event repository storage backend ('memory' or 'postgres')",
+    )
+    configured: bool = Field(
+        default=False,
+        description="Whether client authentication is configured (both URL and anon key present)",
+    )
+
+
 # ==============================================================================
 # 7. AI Operation & Fallback Result Envelopes
 # ==============================================================================

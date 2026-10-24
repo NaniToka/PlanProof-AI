@@ -73,7 +73,19 @@ pip install -r requirements.txt
 ```bash
 cp .env.example .env
 # Optional: add GEMINI_API_KEY when integrating AI features in Milestone 2
+# Optional: configure Supabase Auth (SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_JWT_SECRET)
 ```
+
+### 3B. Authentication & Multi-Tenancy (Supabase Integration)
+
+PlanProof AI supports secure multi-tenant user authentication via Supabase Auth and official client libraries, while maintaining an isolated guest/demo mode for offline evaluation:
+
+- **Frontend Client Configuration:** The frontend retrieves public configuration dynamically via `GET /api/v1/auth/config`. Only client-safe parameters (`SUPABASE_URL` and `SUPABASE_ANON_KEY`) are exposed to the browser.
+- **Secret Isolation:** Backend verification secrets (`SUPABASE_JWT_SECRET`), database connection strings (`DATABASE_URL`), and service-role keys are strictly server-side and never exposed to client code, API responses, or logs.
+- **Official Client Integration:** User sessions, password verification, and tokens are managed exclusively by the official Supabase JavaScript SDK (`@supabase/supabase-js`, pinned CDN UMD bundle). No custom password handling or manual token storage is used.
+- **Bearer Token Attachment & 401 Handling:** Every authenticated API request automatically attaches `Authorization: Bearer <access_token>`. On an HTTP 401 response, the client attempts a single session refresh via `supabase.auth.refreshSession()` and retries the request once. If refresh fails, it securely clears user-specific state and prompts the user to log in again without retry loops.
+- **Guest / Demo Mode Isolation:** When unauthenticated and `STORAGE_BACKEND=memory` (with `ALLOW_GUEST_MODE=true`), users operate in an ephemeral guest session isolated by `X-Guest-Session-ID`. Guests never access PostgreSQL-backed tenant data, and guest state is never silently mixed into cloud-persisted accounts upon login.
+- **Unconfigured State Handling:** If Supabase credentials are not configured in `.env`, the console gracefully operates in local Guest/Demo mode with clear setup notices, rather than failing silently or crashing.
 
 ### 4. Run Automated Tests & Quality Checks
 
