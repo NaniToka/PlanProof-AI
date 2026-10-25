@@ -20,7 +20,7 @@ from app.auth import (
     get_current_user,
     get_current_user_or_guest,
 )
-from app.config import Settings
+from app.config import ConfigurationError, Settings
 
 
 # ==============================================================================
@@ -718,4 +718,5 @@ def test_create_and_verify_guest_token_rejects_insufficient_secret() -> None:
     with pytest.raises(AuthenticationError) as exc:
         verify_guest_session_token("gst.fake.token", secret="too-short")
     assert exc.value.code == "INVALID_GUEST_SESSION"
+
 

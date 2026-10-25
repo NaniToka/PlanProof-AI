@@ -815,3 +815,4 @@ async def test_cors_credentials_enabled_for_explicit_origin(auth_settings: Setti
         assert resp.headers.get("access-control-allow-credentials") == "true"
         assert resp.headers.get("access-control-allow-origin") == trusted_origin
 
+
