@@ -268,3 +268,94 @@ def test_jwt_public_key_masking() -> None:
     assert settings.get_supabase_jwt_public_key_value() == pem_data
     assert settings.is_auth_configured is True
 
+
+def test_render_yaml_configuration_matches_settings() -> None:
+    """Verify render.yaml specifies APP_ENV=production and declares required secrets."""
+    import yaml
+    from pathlib import Path
+
+    render_path = Path(__file__).parent.parent / "render.yaml"
+    assert render_path.exists(), "render.yaml must exist"
+    data = yaml.safe_load(render_path.read_text(encoding="utf-8"))
+
+    services = data.get("services", [])
+    assert len(services) >= 1
+    web_service = services[0]
+
+    env_vars = {item["key"]: item.get("value") for item in web_service.get("envVars", [])}
+    assert "APP_ENV" in env_vars, "render.yaml must use APP_ENV rather than ambiguous ENVIRONMENT"
+    assert env_vars["APP_ENV"] == "production"
+
+    # Confirm GUEST_SESSION_SECRET is declared as a sync: false secret
+    secret_keys = [item["key"] for item in web_service.get("envVars", []) if item.get("sync") is False]
+    assert "GUEST_SESSION_SECRET" in secret_keys, "GUEST_SESSION_SECRET must be declared in render.yaml"
+
+
+def test_environment_validation_alias_and_precedence(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify that ENVIRONMENT acts as a validation alias for app_env and APP_ENV has precedence."""
+    # 1. ENVIRONMENT alone maps to app_env
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.delenv("APP_ENV", raising=False)
+    # Production with guest mode requires secret
+    s1 = Settings(allow_guest_mode=False)
+    assert s1.app_env == "production"
+
+    # 2. When both are set, APP_ENV takes precedence over ENVIRONMENT
+    monkeypatch.setenv("APP_ENV", "staging")
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    s2 = Settings(allow_guest_mode=False)
+    assert s2.app_env == "staging"
+
+
+def test_production_mode_enforces_security_rules() -> None:
+    """Verify that production mode strictly enforces cookie and guest secret requirements."""
+    # Production forbids insecure cookies
+    with pytest.raises(ValidationError, match="Insecure cookies"):
+        Settings(app_env="production", secure_cookies=False)
+
+    # Production with guest mode requires explicit secret
+    with pytest.raises(ValidationError, match="require an explicit, stable GUEST_SESSION_SECRET"):
+        Settings(app_env="production", allow_guest_mode=True, guest_session_secret=None)
+
+    # Production rejects secret shorter than 32 characters
+    with pytest.raises(ValidationError, match="must be at least 32 characters"):
+        Settings(app_env="production", allow_guest_mode=True, guest_session_secret="too-short")
+
+    # Production succeeds with valid secret (>= 32 chars)
+    valid_secret = "a" * 32
+    s = Settings(app_env="production", allow_guest_mode=True, guest_session_secret=valid_secret)
+    assert s.app_env == "production"
+
+
+def test_trusted_proxies_validation() -> None:
+    """Verify validation of trusted_proxies: IPs, CIDR ranges, hostnames, and wildcard rejection."""
+    # Valid configurations
+    s1 = Settings(trusted_proxies=["127.0.0.1", "::1", "10.0.0.0/8", "172.16.0.0/12", "localhost", "testclient"])
+    assert "10.0.0.0/8" in s1.trusted_proxies
+    assert "localhost" in s1.trusted_proxies
+
+    # Comma-separated string parsing
+    s2 = Settings(trusted_proxies="192.168.1.0/24, fe80::/10, proxy.internal")
+    assert s2.trusted_proxies == ["192.168.1.0/24", "fe80::/10", "proxy.internal"]
+
+    # Reject wildcard 0.0.0.0/0
+    with pytest.raises(ValidationError, match="Wildcard proxy entry '0.0.0.0/0' is prohibited"):
+        Settings(trusted_proxies=["0.0.0.0/0"])
+
+    # Reject wildcard ::/0
+    with pytest.raises(ValidationError, match="Wildcard proxy entry '::/0' is prohibited"):
+        Settings(trusted_proxies=["::/0"])
+
+    # Reject invalid IP
+    with pytest.raises(ValidationError, match="Invalid IP address or CIDR range"):
+        Settings(trusted_proxies=["999.999.999.999"])
+
+    # Reject invalid CIDR
+    with pytest.raises(ValidationError, match="Invalid IP address or CIDR range"):
+        Settings(trusted_proxies=["10.0.0.0/99"])
+
+    # Reject malformed hostname
+    with pytest.raises(ValidationError, match="Invalid trusted proxy entry"):
+        Settings(trusted_proxies=["invalid host name!"])
+
+

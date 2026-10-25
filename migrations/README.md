@@ -39,29 +39,36 @@ PlanProof AI migrations are designed for **Supabase PostgreSQL 15+** with GoTrue
 
 ## 3. How to Apply Migrations
 
+> [!IMPORTANT]
+> **Connection Architecture: Migrations vs Runtime Traffic**
+> - **Schema Migrations (DDL)**: MUST be executed using a **direct / session connection (port 5432)**, the official Supabase CLI (`supabase db push`), or the Supabase Dashboard SQL Editor. PgBouncer and Supavisor transaction poolers (port 6543) do not support DDL statements, table-level locks, or schema migration transactions.
+> - **Application Runtime Traffic (DML)**: Application services connect via the **transaction pooler (port 6543)** for connection scalability, where queries execute inside individual transactions with transaction-scoped RLS claim contexts.
+> - Available connection methods depend on your network environment: direct IPv6 host (`db.<project-ref>.supabase.co:5432`), IPv4 session pooler (`aws-0-<region>.pooler.supabase.com:5432`), or Supabase CLI.
+
 ### Option A: Using Supabase CLI (Recommended)
 ```bash
-# Start local Supabase containers (if using local development)
-supabase start
+# Link project (if using remote staging/production)
+supabase link --project-ref <project-ref>
 
 # Apply all pending migrations in order
 supabase db push
 ```
 
-### Option B: Using `psql` Connection Pooler
+### Option B: Using `psql` Direct / Session Connection (Port 5432)
 ```bash
-# Export your sanitized database URL (transaction pooler port 6543)
-export DATABASE_URL="postgresql://postgres.<project-ref>:<db-password>@<pooler-host>:6543/postgres"
+# Export direct/session connection URL (Port 5432 - NEVER use transaction pooler 6543 for DDL)
+export MIGRATION_DATABASE_URL="postgresql://postgres.<project-ref>:<db-password>@<direct-host-or-session-pooler>:5432/postgres"
 
-# Apply sequentially
+# Apply sequentially (00001 through 00009)
 for file in migrations/000*.sql; do
     echo "Applying $file..."
-    psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$file"
+    psql "$MIGRATION_DATABASE_URL" -v ON_ERROR_STOP=1 -f "$file"
 done
 ```
 
 ### Option C: Using Supabase Dashboard SQL Editor
-Copy and paste the contents of files `00001` through `00008` sequentially into the SQL Editor in your Supabase project dashboard and click **Run**.
+Copy and paste the contents of files `00001` through `00009` sequentially into the SQL Editor in your Supabase project dashboard and click **Run**.
+
 
 ---
 
@@ -129,9 +136,10 @@ ORDER BY tc.table_name;
 If a migration fails or must be rolled back:
 
 ```bash
+# Use direct/session connection (port 5432) for rollback DDL
 for file in migrations/down/000*.sql; do
     echo "Reverting $file..."
-    psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$file"
+    psql "$MIGRATION_DATABASE_URL" -v ON_ERROR_STOP=1 -f "$file"
 done
 ```
 

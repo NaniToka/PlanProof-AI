@@ -1,6 +1,8 @@
 """Application configuration for PlanProof AI using Pydantic Settings."""
 
+import ipaddress
 import json
+import re
 import secrets
 from enum import StrEnum
 from functools import lru_cache
@@ -8,7 +10,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from pydantic import Field, SecretStr, field_validator, model_validator
+from pydantic import AliasChoices, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _PROCESS_GUEST_SECRET: bytes = secrets.token_bytes(32)
@@ -38,7 +40,9 @@ class Settings(BaseSettings):
     # Application metadata
     app_name: str = Field(default="PlanProof AI", description="Application name")
     app_env: str = Field(
-        default="development", description="Environment mode: development, test, production"
+        default="development",
+        validation_alias=AliasChoices("app_env", "environment"),
+        description="Environment mode: development, test, production",
     )
     version: str = Field(default="0.1.0", description="Application semantic version")
     app_host: str = Field(default="0.0.0.0", description="HTTP server bind host")
@@ -479,7 +483,7 @@ class Settings(BaseSettings):
     @field_validator("trusted_proxies", mode="before")
     @classmethod
     def parse_trusted_proxies(cls, value: Any) -> list[str]:
-        """Parse trusted proxy entries into a clean list of hostnames/IPs."""
+        """Parse trusted proxy entries into a clean, validated list of hostnames, IP addresses, or CIDR ranges."""
         if isinstance(value, str):
             stripped = value.strip()
             if stripped.startswith("[") and stripped.endswith("]"):
@@ -493,7 +497,49 @@ class Settings(BaseSettings):
                 value = [item.strip() for item in stripped.split(",") if item.strip()]
         if not isinstance(value, list) or not value:
             return ["127.0.0.1", "::1", "localhost", "testclient"]
-        return [str(item).strip() for item in value if str(item).strip()]
+
+        validated: list[str] = []
+        for item in value:
+            if not isinstance(item, str) or not item.strip():
+                raise ValueError("Trusted proxy entries cannot be empty or non-string")
+            s = item.strip()
+            if s in ("0.0.0.0/0", "::/0"):
+                raise ValueError(
+                    f"Wildcard proxy entry '{s}' is prohibited in TRUSTED_PROXIES for security."
+                )
+
+            # 1. Check if entry is a valid IP address or CIDR network
+            try:
+                ipaddress.ip_network(s, strict=False)
+                if s not in validated:
+                    validated.append(s)
+                continue
+            except ValueError:
+                pass
+
+            # If it contained slashes or colons, or all parts are digits, it was meant to be an IP/CIDR
+            if "/" in s or ":" in s or all(part.isdigit() for part in s.split(".")):
+                raise ValueError(
+                    f"Invalid IP address or CIDR range in TRUSTED_PROXIES: '{s}'"
+                )
+
+            # 2. Check if entry is a valid hostname (e.g. localhost, testclient)
+            if re.match(
+                r"^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*$",
+                s,
+            ):
+                parts = s.split(".")
+                if len(parts) > 1 and parts[-1].isdigit():
+                    raise ValueError(f"Invalid hostname with numeric TLD in TRUSTED_PROXIES: '{s}'")
+                if s not in validated:
+                    validated.append(s)
+                continue
+
+            raise ValueError(
+                f"Invalid trusted proxy entry: '{s}'. Must be a valid IP address, CIDR range, or hostname."
+            )
+
+        return validated
 
     @model_validator(mode="after")
     def validate_budget_and_paths(self) -> "Settings":

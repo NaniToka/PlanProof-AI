@@ -210,3 +210,19 @@ def test_handle_new_user_security_definer_and_search_path() -> None:
         "public.handle_new_user() must be declared with SECURITY DEFINER SET search_path = public"
     )
 
+
+def test_migration_documentation_separates_ddl_port_5432_from_pooler_port_6543() -> None:
+    """Verify migrations/README.md directs DDL migrations to direct/session port 5432, not pooler port 6543."""
+    readme_text = (MIGRATIONS_DIR / "README.md").read_text(encoding="utf-8")
+
+    # Assert README documents port 5432 for DDL migrations
+    assert ":5432/postgres" in readme_text, "migrations/README.md must specify direct/session port 5432 for migrations"
+    assert "MIGRATION_DATABASE_URL" in readme_text
+
+    # Assert README forbids/warns against port 6543 for migrations
+    assert "NEVER use transaction pooler 6543 for DDL" in readme_text or "poolers (port 6543) do not support DDL" in readme_text
+    assert not re.search(r"psql\s+[\"']?\$(?:DATABASE_URL|MIGRATION_DATABASE_URL)[\"']?.*?6543", readme_text), (
+        "migrations/README.md must not instruct psql execution over transaction pooler port 6543"
+    )
+
+

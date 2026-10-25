@@ -7,7 +7,7 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.9
-      - key: ENVIRONMENT
+      - key: APP_ENV
         value: production
       - key: CRISIS_DATASET_PATH
         value: data/crisis_scenarios.csv
@@ -16,4 +16,6 @@ services:
       - key: VENDOR_CHECKLISTS_PATH
         value: data/vendor_checklists.json
       - key: GEMINI_API_KEY
+        sync: false
+      - key: GUEST_SESSION_SECRET
         sync: false

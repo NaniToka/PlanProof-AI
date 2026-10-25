@@ -816,3 +816,121 @@ async def test_cors_credentials_enabled_for_explicit_origin(auth_settings: Setti
         assert resp.headers.get("access-control-allow-origin") == trusted_origin
 
 
+@pytest.mark.asyncio
+async def test_trusted_proxy_ipv4_cidr_membership_and_non_membership(auth_settings: Settings) -> None:
+    """Verify that IPv4 CIDR ranges correctly trust member clients and reject non-member clients."""
+    cidr_settings = auth_settings.model_copy(
+        update={
+            "app_env": "development",
+            "trusted_proxies": ["10.0.0.0/8"],
+        }
+    )
+    app = create_app(settings=cidr_settings)
+
+    # 1. Member client in 10.0.0.0/8 (10.0.1.5) -> Forwarded-Proto is trusted, cookie is Secure
+    async with AsyncClient(
+        transport=ASGITransport(app=app, client=("10.0.1.5", 54321)),
+        base_url="http://test",
+    ) as client:
+        resp = await client.post(
+            "/api/v1/auth/guest-session",
+            headers={"X-Forwarded-Proto": "https"},
+        )
+        assert resp.status_code == 200
+        set_cookie = resp.headers.get("set-cookie", "").lower()
+        assert "secure" in set_cookie
+
+    # 2. Non-member client (172.16.1.1) -> Forwarded-Proto untrusted, cookie is NOT Secure
+    async with AsyncClient(
+        transport=ASGITransport(app=app, client=("172.16.1.1", 54321)),
+        base_url="http://test",
+    ) as client:
+        resp = await client.post(
+            "/api/v1/auth/guest-session",
+            headers={"X-Forwarded-Proto": "https"},
+        )
+        assert resp.status_code == 200
+        set_cookie = resp.headers.get("set-cookie", "").lower()
+        assert "secure" not in set_cookie
+
+
+@pytest.mark.asyncio
+async def test_trusted_proxy_ipv6_cidr_membership_and_non_membership(auth_settings: Settings) -> None:
+    """Verify that IPv6 CIDR ranges correctly trust member clients and reject non-member clients."""
+    ipv6_settings = auth_settings.model_copy(
+        update={
+            "app_env": "development",
+            "trusted_proxies": ["2001:db8::/32"],
+        }
+    )
+    app = create_app(settings=ipv6_settings)
+
+    # 1. Member IPv6 client (2001:db8::1) -> Forwarded-Proto is trusted, cookie is Secure
+    async with AsyncClient(
+        transport=ASGITransport(app=app, client=("2001:db8::1", 54321)),
+        base_url="http://test",
+    ) as client:
+        resp = await client.post(
+            "/api/v1/auth/guest-session",
+            headers={"X-Forwarded-Proto": "https"},
+        )
+        assert resp.status_code == 200
+        set_cookie = resp.headers.get("set-cookie", "").lower()
+        assert "secure" in set_cookie
+
+    # 2. Non-member IPv6 client (2001:db9::1) -> Forwarded-Proto untrusted, cookie is NOT Secure
+    async with AsyncClient(
+        transport=ASGITransport(app=app, client=("2001:db9::1", 54321)),
+        base_url="http://test",
+    ) as client:
+        resp = await client.post(
+            "/api/v1/auth/guest-session",
+            headers={"X-Forwarded-Proto": "https"},
+        )
+        assert resp.status_code == 200
+        set_cookie = resp.headers.get("set-cookie", "").lower()
+        assert "secure" not in set_cookie
+
+
+@pytest.mark.asyncio
+async def test_dev_plain_http_without_forwarded_proto_cookie_not_secure(auth_settings: Settings) -> None:
+    """In development over plain HTTP without X-Forwarded-Proto, cookies are NOT Secure."""
+    dev_settings = auth_settings.model_copy(
+        update={
+            "app_env": "development",
+            "trusted_proxies": ["127.0.0.1"],
+        }
+    )
+    app = create_app(settings=dev_settings)
+    async with AsyncClient(
+        transport=ASGITransport(app=app, client=("127.0.0.1", 54321)),
+        base_url="http://test",
+    ) as client:
+        resp = await client.post("/api/v1/auth/guest-session")
+        assert resp.status_code == 200
+        set_cookie = resp.headers.get("set-cookie", "").lower()
+        assert "secure" not in set_cookie
+
+
+@pytest.mark.asyncio
+async def test_explicit_secure_cookies_override(auth_settings: Settings) -> None:
+    """When secure_cookies=True is explicitly set, cookies are Secure even in dev over plain HTTP."""
+    override_settings = auth_settings.model_copy(
+        update={
+            "app_env": "development",
+            "secure_cookies": True,
+            "trusted_proxies": ["127.0.0.1"],
+        }
+    )
+    app = create_app(settings=override_settings)
+    async with AsyncClient(
+        transport=ASGITransport(app=app, client=("192.0.2.1", 54321)),
+        base_url="http://test",
+    ) as client:
+        resp = await client.post("/api/v1/auth/guest-session")
+        assert resp.status_code == 200
+        set_cookie = resp.headers.get("set-cookie", "").lower()
+        assert "secure" in set_cookie
+
+
+

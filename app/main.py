@@ -1,5 +1,6 @@
 """FastAPI application entrypoint for PlanProof AI."""
 
+import ipaddress
 import logging
 import re
 from collections.abc import AsyncGenerator
@@ -189,6 +190,44 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_headers=["*"],
     )
 
+    def is_trusted_proxy(client_host: str | None, trusted_proxies: list[str] | str) -> bool:
+        """Evaluate whether client_host matches an explicitly configured trusted proxy IP, CIDR, or hostname.
+
+        Never trusts wildcard 0.0.0.0/0 or missing client addresses.
+        """
+        if not client_host or not client_host.strip():
+            return False
+        client_host = client_host.strip()
+
+        trusted_list = (
+            trusted_proxies
+            if isinstance(trusted_proxies, list)
+            else [p.strip() for p in trusted_proxies.split(",") if p.strip()]
+        )
+
+        client_ip: ipaddress.IPv4Address | ipaddress.IPv6Address | None = None
+        try:
+            client_ip = ipaddress.ip_address(client_host)
+        except ValueError:
+            client_ip = None
+
+        for entry in trusted_list:
+            entry = entry.strip()
+            if not entry or entry in ("0.0.0.0/0", "::/0"):
+                continue
+            # Exact string/hostname match (e.g. localhost, testclient)
+            if client_host == entry:
+                return True
+            # If client_host is an IP address, evaluate CIDR / IP network membership
+            if client_ip is not None:
+                try:
+                    network = ipaddress.ip_network(entry, strict=False)
+                    if client_ip in network:
+                        return True
+                except ValueError:
+                    pass
+        return False
+
     def is_secure_request(req: Request, s: Settings) -> bool:
         """Determine whether the incoming request is considered HTTPS/secure.
 
@@ -196,7 +235,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         - If secure_cookies is explicitly configured: return that boolean.
         - In production: always True (TLS is terminated at the edge/proxy).
         - Direct HTTPS scheme: True.
-        - X-Forwarded-Proto: Only trusted if coming from a configured trusted proxy.
+        - X-Forwarded-Proto: Only trusted if coming from an explicitly configured trusted proxy IP, CIDR, or hostname.
         """
         if s.secure_cookies is not None:
             return s.secure_cookies
@@ -207,14 +246,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         forwarded_proto = req.headers.get("x-forwarded-proto")
         if forwarded_proto and forwarded_proto.lower() == "https":
             client_host = req.client.host if req.client else None
-            trusted = (
-                s.trusted_proxies
-                if isinstance(s.trusted_proxies, list)
-                else [p.strip() for p in s.trusted_proxies.split(",") if p.strip()]
-            )
-            if client_host and (client_host in trusted or "0.0.0.0/0" in trusted):
+            if is_trusted_proxy(client_host, s.trusted_proxies):
                 return True
         return False
+
 
     @app.middleware("http")
     async def guest_session_cookie_middleware(request: Request, call_next: Any) -> Any:
