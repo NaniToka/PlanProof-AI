@@ -178,26 +178,59 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if isinstance(app_settings.allowed_cors_origins, list)
         else [app_settings.allowed_cors_origins]
     )
+    # Only allow credentials if origins are not wildcard "*" to eliminate cross-origin CSRF risk
+    allow_credentials = cors_origins != ["*"]
 
     app.add_middleware(
         CORSMiddleware,
         allow_origins=cors_origins,
-        allow_credentials=True,
+        allow_credentials=allow_credentials,
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    def is_secure_request(req: Request, s: Settings) -> bool:
+        """Determine whether the incoming request is considered HTTPS/secure.
+
+        Rules:
+        - If secure_cookies is explicitly configured: return that boolean.
+        - In production: always True (TLS is terminated at the edge/proxy).
+        - Direct HTTPS scheme: True.
+        - X-Forwarded-Proto: Only trusted if coming from a configured trusted proxy.
+        """
+        if s.secure_cookies is not None:
+            return s.secure_cookies
+        if s.app_env == "production":
+            return True
+        if req.url.scheme == "https":
+            return True
+        forwarded_proto = req.headers.get("x-forwarded-proto")
+        if forwarded_proto and forwarded_proto.lower() == "https":
+            client_host = req.client.host if req.client else None
+            trusted = (
+                s.trusted_proxies
+                if isinstance(s.trusted_proxies, list)
+                else [p.strip() for p in s.trusted_proxies.split(",") if p.strip()]
+            )
+            if client_host and (client_host in trusted or "0.0.0.0/0" in trusted):
+                return True
+        return False
 
     @app.middleware("http")
     async def guest_session_cookie_middleware(request: Request, call_next: Any) -> Any:
         response = await call_next(request)
         new_guest_token = getattr(request.state, "new_guest_token", None)
+        new_guest_expires_at = getattr(request.state, "new_guest_expires_at", None)
         if new_guest_token:
             response.headers["X-Guest-Session-ID"] = new_guest_token
+            is_secure = is_secure_request(request, app_settings)
             response.set_cookie(
                 key="planproof_guest_session",
                 value=new_guest_token,
                 max_age=app_settings.guest_session_ttl_seconds,
+                expires=new_guest_expires_at,
                 httponly=True,
+                secure=is_secure,
                 samesite="lax",
                 path="/",
             )
@@ -241,10 +274,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def authentication_exception_handler(
         _request: Request, exc: AuthenticationError
     ) -> JSONResponse:
-        """Handle authentication failures with standard 401 response and WWW-Authenticate header."""
+        """Handle authentication failures with standard error response."""
+        status_code = getattr(exc, "status_code", status.HTTP_401_UNAUTHORIZED)
+        headers = {"WWW-Authenticate": "Bearer"} if status_code == status.HTTP_401_UNAUTHORIZED else None
         return JSONResponse(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            headers={"WWW-Authenticate": "Bearer"},
+            status_code=status_code,
+            headers=headers,
             content={
                 "error": {
                     "code": exc.code,
@@ -581,11 +616,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             secret=active_settings.get_guest_session_secret_bytes(),
         )
         response.headers["X-Guest-Session-ID"] = token
+        is_secure = is_secure_request(request, active_settings)
         response.set_cookie(
             key="planproof_guest_session",
             value=token,
             max_age=active_settings.guest_session_ttl_seconds,
+            expires=expires_at,
             httponly=True,
+            secure=is_secure,
             samesite="lax",
             path="/",
         )

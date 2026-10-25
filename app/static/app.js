@@ -2586,11 +2586,14 @@ async function renderRecoveryHistory() {
     <div class="loading-state"><div class="spinner"></div></div>
   `;
 
+  const epoch = state.authEpoch;
   try {
     const records = await API.getRecoveryRecords(state.currentEventId);
+    if (epoch !== state.authEpoch) return;
     state.recoveryRecords = records || [];
     renderRecoveryListView(container, state.recoveryRecords);
   } catch (err) {
+    if (epoch !== state.authEpoch) return;
     console.error('Failed to list recovery records:', err);
     container.innerHTML = `
       <div class="view-header">
@@ -2984,8 +2987,10 @@ async function renderReadiness() {
     <div class="loading-state"><div class="spinner"></div></div>
   `;
 
+  const epoch = state.authEpoch;
   try {
     const data = await API.getReadiness(state.currentEventId);
+    if (epoch !== state.authEpoch) return;
     state.readiness = data;
 
     const statusMap = {
@@ -3160,6 +3165,7 @@ async function renderReadiness() {
       </div>
     `;
   } catch (err) {
+    if (epoch !== state.authEpoch) return;
     console.error('Failed to load readiness assessment:', err);
     container.innerHTML = `
       <div class="view-header">

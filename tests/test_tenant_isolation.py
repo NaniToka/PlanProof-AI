@@ -13,6 +13,7 @@ Covers:
 from __future__ import annotations
 
 import os
+import re
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
@@ -20,6 +21,7 @@ import asyncpg
 import jwt
 import pytest
 from httpx import ASGITransport, AsyncClient
+from pydantic import SecretStr
 
 from app.auth import create_guest_session_token
 from app.config import Settings
@@ -419,6 +421,149 @@ async def test_guest_session_issuance_endpoint(client: AsyncClient) -> None:
     assert "planproof_guest_session" in resp.cookies
 
 
+@pytest.mark.asyncio
+async def test_guest_cookie_and_header_precedence(auth_settings: Settings) -> None:
+    """Header takes precedence over cookie; invalid header fails fast and never falls back."""
+    app = create_app(settings=auth_settings)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        # Create token for Guest 1 and Guest 2
+        token_1, id_1, _ = create_guest_session_token(secret=TEST_JWT_SECRET)
+        token_2, id_2, _ = create_guest_session_token(secret=TEST_JWT_SECRET)
+
+        # 1. Guest 1 creates an event
+        payload = {
+            "event_name": "Precedence Event",
+            "event_type": "community_event",
+            "city": "Pune",
+            "event_date": "2027-10-15",
+            "guest_count": 120,
+            "total_budget_inr": 400000,
+        }
+        create_res = await client.post(
+            "/api/v1/events",
+            json=payload,
+            headers={"X-Guest-Session-ID": token_1},
+        )
+        assert create_res.status_code == 201
+        event_id = create_res.json()["event_id"]
+
+        # Case A: Both header (token_1) and cookie (token_2) present -> Header wins (token_1), can read event
+        client.cookies.set("planproof_guest_session", token_2)
+        res_both = await client.get(
+            f"/api/v1/events/{event_id}",
+            headers={"X-Guest-Session-ID": token_1},
+        )
+        assert res_both.status_code == 200
+
+        # Case B: Header (token_2) and cookie (token_1) present -> Header wins (token_2), cannot read Guest 1 event
+        res_h2 = await client.get(
+            f"/api/v1/events/{event_id}",
+            headers={"X-Guest-Session-ID": token_2},
+        )
+        assert res_h2.status_code == 404
+
+        # Case C: Invalid header and valid cookie -> Fails fast with 401, does NOT fall back to cookie
+        res_forged = await client.get(
+            f"/api/v1/events/{event_id}",
+            headers={"X-Guest-Session-ID": "gst.forged.signature"},
+        )
+        assert res_forged.status_code == 401
+        assert res_forged.json()["error"]["code"] == "INVALID_GUEST_SESSION"
+
+        # Case D: No header, valid cookie (token_1) -> Cookie accepted, can read event
+        client.cookies.set("planproof_guest_session", token_1)
+        res_cookie_only = await client.get(f"/api/v1/events/{event_id}")
+        assert res_cookie_only.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_guest_session_multi_instance_and_secret_rotation(auth_settings: Settings) -> None:
+    """Two instances sharing GUEST_SESSION_SECRET can verify tokens; rotated secret rejects old tokens."""
+    shared_secret = "shared-cluster-guest-secret-32-chars-long!"
+    settings_node1 = auth_settings.model_copy(
+        update={"guest_session_secret": SecretStr(shared_secret)}
+    )
+    settings_node2 = auth_settings.model_copy(
+        update={"guest_session_secret": SecretStr(shared_secret)}
+    )
+
+    app_node1 = create_app(settings=settings_node1)
+    app_node2 = create_app(settings=settings_node2)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app_node1), base_url="http://test"
+    ) as client1, AsyncClient(
+        transport=ASGITransport(app=app_node2), base_url="http://test"
+    ) as client2:
+        # Issue token on node 1
+        resp_issue = await client1.post("/api/v1/auth/guest-session")
+        assert resp_issue.status_code == 200
+        token = resp_issue.json()["guest_session_token"]
+
+        # Node 2 can verify and use node 1's token
+        resp_node2 = await client2.get(
+            "/api/v1/events",
+            headers={"X-Guest-Session-ID": token},
+        )
+        assert resp_node2.status_code == 200
+
+        # Rotate secret on Node 3
+        settings_rotated = auth_settings.model_copy(
+            update={"guest_session_secret": SecretStr("new-rotated-secret-32-chars-long!")}
+        )
+        app_rotated = create_app(settings=settings_rotated)
+        async with AsyncClient(
+            transport=ASGITransport(app=app_rotated), base_url="http://test"
+        ) as client_rotated:
+            resp_old_token = await client_rotated.get(
+                "/api/v1/events",
+                headers={"X-Guest-Session-ID": token},
+            )
+            assert resp_old_token.status_code == 401
+            assert resp_old_token.json()["error"]["code"] == "INVALID_GUEST_SESSION"
+
+
+@pytest.mark.asyncio
+async def test_guest_cookie_security_attributes(auth_settings: Settings) -> None:
+    """planproof_guest_session cookie has HttpOnly, SameSite=lax, and Secure flags in HTTPS/production."""
+    prod_settings = auth_settings.model_copy(
+        update={
+            "app_env": "production",
+            "allow_guest_mode": True,  # test demo production mode cookie flags
+            "guest_session_secret": SecretStr("prod-secret-32-chars-length-prod!"),
+        }
+    )
+    app = create_app(settings=prod_settings)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="https://test"
+    ) as client:
+        resp = await client.post("/api/v1/auth/guest-session")
+        assert resp.status_code == 200
+        set_cookie_header = resp.headers.get("set-cookie", "")
+        assert "planproof_guest_session=" in set_cookie_header
+        assert "httponly" in set_cookie_header.lower()
+        assert "samesite=lax" in set_cookie_header.lower()
+        assert "secure" in set_cookie_header.lower()
+
+
+@pytest.mark.asyncio
+async def test_invalid_bearer_token_cannot_bypass_with_valid_guest_token(
+    client: AsyncClient,
+) -> None:
+    """A request with an invalid Bearer token fails with 401 even when supplying a valid guest token."""
+    valid_guest_token, _, _ = create_guest_session_token(secret=TEST_JWT_SECRET)
+    resp = await client.get(
+        "/api/v1/events",
+        headers={
+            "Authorization": "Bearer invalid.fake.token",
+            "X-Guest-Session-ID": valid_guest_token,
+        },
+    )
+    assert resp.status_code == 401
+    assert resp.json()["error"]["code"] in ("INVALID_TOKEN", "INVALID_ALGORITHM")
+
 
 @pytest.mark.asyncio
 async def test_postgres_rls_transaction_scoping_and_zero_leakage() -> None:
@@ -508,3 +653,165 @@ async def test_postgres_rls_transaction_scoping_and_zero_leakage() -> None:
     finally:
         await admin_conn.execute("DELETE FROM auth.users WHERE id IN ($1, $2);", user_1, user_2)
         await admin_conn.close()
+
+
+@pytest.mark.asyncio
+async def test_cookie_secure_in_production_regardless_of_forwarded_proto(
+    auth_settings: Settings,
+) -> None:
+    """In production, cookies are always Secure even if client sends X-Forwarded-Proto: http."""
+    prod_settings = auth_settings.model_copy(
+        update={
+            "app_env": "production",
+            "allow_guest_mode": True,
+            "guest_session_secret": SecretStr("prod-secret-32-chars-length-prod!"),
+        }
+    )
+    app = create_app(settings=prod_settings)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/v1/auth/guest-session",
+            headers={"X-Forwarded-Proto": "http"},
+        )
+        assert resp.status_code == 200
+        set_cookie = resp.headers.get("set-cookie", "").lower()
+        assert "secure" in set_cookie
+        assert "httponly" in set_cookie
+        assert "samesite=lax" in set_cookie
+
+
+@pytest.mark.asyncio
+async def test_dev_cookies_reject_spoofed_forwarded_proto_from_untrusted_client(
+    auth_settings: Settings,
+) -> None:
+    """In development over HTTP, untrusted clients cannot spoof X-Forwarded-Proto to set Secure."""
+    dev_settings = auth_settings.model_copy(
+        update={
+            "app_env": "development",
+            "trusted_proxies": ["127.0.0.1"],
+        }
+    )
+    app = create_app(settings=dev_settings)
+    # Simulate request with untrusted client IP
+    async with AsyncClient(
+        transport=ASGITransport(app=app, client=("198.51.100.24", 54321)),
+        base_url="http://test",
+    ) as client:
+        resp = await client.post(
+            "/api/v1/auth/guest-session",
+            headers={"X-Forwarded-Proto": "https"},
+        )
+        assert resp.status_code == 200
+        set_cookie = resp.headers.get("set-cookie", "").lower()
+        # Secure must NOT be set because client IP 198.51.100.24 is not a trusted proxy
+        assert "secure" not in set_cookie
+
+
+@pytest.mark.asyncio
+async def test_dev_cookies_accept_forwarded_proto_from_trusted_proxy(
+    auth_settings: Settings,
+) -> None:
+    """In development over HTTP, trusted proxies with X-Forwarded-Proto: https set Secure."""
+    dev_settings = auth_settings.model_copy(
+        update={
+            "app_env": "development",
+            "trusted_proxies": ["127.0.0.1"],
+        }
+    )
+    app = create_app(settings=dev_settings)
+    # Simulate request from trusted proxy 127.0.0.1
+    async with AsyncClient(
+        transport=ASGITransport(app=app, client=("127.0.0.1", 54321)),
+        base_url="http://test",
+    ) as client:
+        resp = await client.post(
+            "/api/v1/auth/guest-session",
+            headers={"X-Forwarded-Proto": "https"},
+        )
+        assert resp.status_code == 200
+        set_cookie = resp.headers.get("set-cookie", "").lower()
+        assert "secure" in set_cookie
+
+
+@pytest.mark.asyncio
+async def test_cookie_expiration_matches_token_exp(auth_settings: Settings) -> None:
+    """Verify that cookie Max-Age and Expires attributes align with the guest token payload exp."""
+    import base64
+    import json
+    from email.utils import parsedate_to_datetime
+
+    app = create_app(settings=auth_settings)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post("/api/v1/auth/guest-session")
+        assert resp.status_code == 200
+        token = resp.json()["guest_session_token"]
+        payload_b64 = token.split(".")[1]
+        padded_b64 = payload_b64 + "=" * (-len(payload_b64) % 4)
+        token_payload = json.loads(base64.urlsafe_b64decode(padded_b64.encode("ascii")).decode("utf-8"))
+        token_exp_ts = token_payload["exp"]
+
+        set_cookie = resp.headers.get("set-cookie", "")
+        # Extract Max-Age
+        assert f"Max-Age={auth_settings.guest_session_ttl_seconds}" in set_cookie
+        # Extract Expires
+        match = re.search(r"expires=([^;]+)", set_cookie, re.IGNORECASE)
+        assert match is not None
+        expires_dt = parsedate_to_datetime(match.group(1))
+        # Expires timestamp should match token_exp_ts within 2 seconds
+        assert abs(int(expires_dt.timestamp()) - token_exp_ts) <= 2
+
+
+@pytest.mark.asyncio
+async def test_forged_guest_cookie_rejected_with_401(auth_settings: Settings) -> None:
+    """A forged or tampered guest cookie without header is rejected with 401 INVALID_GUEST_SESSION."""
+    app = create_app(settings=auth_settings)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        client.cookies.set("planproof_guest_session", "gst.forged_payload.bad_signature")
+        resp = await client.get("/api/v1/events")
+        assert resp.status_code == 401
+        assert resp.json()["error"]["code"] == "INVALID_GUEST_SESSION"
+
+
+@pytest.mark.asyncio
+async def test_cors_credentials_disabled_when_wildcard_origin(auth_settings: Settings) -> None:
+    """When allowed_cors_origins is '*', credentials cannot be allowed to prevent cross-origin CSRF."""
+    wildcard_settings = auth_settings.model_copy(update={"allowed_cors_origins": ["*"]})
+    app = create_app(settings=wildcard_settings)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.options(
+            "/api/v1/events",
+            headers={
+                "Origin": "https://evil-attacker.com",
+                "Access-Control-Request-Method": "GET",
+            },
+        )
+        assert resp.headers.get("access-control-allow-credentials") != "true"
+
+
+@pytest.mark.asyncio
+async def test_cors_credentials_enabled_for_explicit_origin(auth_settings: Settings) -> None:
+    """When allowed_cors_origins specifies explicit trusted domains, credentials are permitted."""
+    trusted_origin = "https://app.planproof.in"
+    explicit_settings = auth_settings.model_copy(update={"allowed_cors_origins": [trusted_origin]})
+    app = create_app(settings=explicit_settings)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.options(
+            "/api/v1/events",
+            headers={
+                "Origin": trusted_origin,
+                "Access-Control-Request-Method": "GET",
+            },
+        )
+        assert resp.headers.get("access-control-allow-credentials") == "true"
+        assert resp.headers.get("access-control-allow-origin") == trusted_origin
+

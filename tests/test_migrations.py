@@ -192,3 +192,21 @@ def test_migration_00009_role_grants_security() -> None:
     assert not re.search(r"GRANT\s+SELECT\s+ON\s+ALL\s+TABLES\s+IN\s+SCHEMA\s+public\s+TO\s+anon\b", sql, re.IGNORECASE), (
         "Migration 00009 must not grant SELECT on all tables to anon"
     )
+
+
+def test_handle_new_user_security_definer_and_search_path() -> None:
+    """Verify that handle_new_user() in 00001_create_profiles.sql sets search_path = public.
+
+    SECURITY DEFINER functions in PostgreSQL execute with the privileges of the owner.
+    They must explicitly set search_path to prevent malicious search_path manipulation attacks.
+    """
+    sql = (MIGRATIONS_DIR / "00001_create_profiles.sql").read_text(encoding="utf-8")
+    match = re.search(
+        r"CREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION\s+public\.handle_new_user\(\).*?SECURITY\s+DEFINER\s+SET\s+search_path\s*=\s*public",
+        sql,
+        re.IGNORECASE | re.DOTALL,
+    )
+    assert match is not None, (
+        "public.handle_new_user() must be declared with SECURITY DEFINER SET search_path = public"
+    )
+

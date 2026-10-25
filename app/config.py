@@ -197,6 +197,14 @@ class Settings(BaseSettings):
         default=["*"],
         description="List of allowed CORS origin URLs or wildcard",
     )
+    trusted_proxies: list[str] | str = Field(
+        default=["127.0.0.1", "::1", "localhost", "testclient"],
+        description="List of trusted reverse proxy IP addresses or hostnames",
+    )
+    secure_cookies: bool | None = Field(
+        default=None,
+        description="Explicit override for Secure attribute on cookies. Defaults to True in production.",
+    )
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -314,6 +322,11 @@ class Settings(BaseSettings):
                 else str(self.supabase_jwt_secret)
             )
             return val.encode("utf-8")
+        if self.app_env == "production" or self.storage_backend == "postgres":
+            raise ConfigurationError(
+                "Ephemeral guest session signing secret is strictly forbidden in production "
+                "or PostgreSQL deployments. A stable GUEST_SESSION_SECRET must be configured."
+            )
         return _PROCESS_GUEST_SECRET
 
     @field_validator(
@@ -450,14 +463,56 @@ class Settings(BaseSettings):
 
         return validated
 
+    @field_validator("guest_session_secret")
+    @classmethod
+    def validate_guest_session_secret(cls, value: Any) -> SecretStr | None:
+        """Validate guest session signing secret length."""
+        if value is None:
+            return None
+        val_str = value.get_secret_value() if isinstance(value, SecretStr) else str(value)
+        if len(val_str) < 32:
+            raise ValueError(
+                "GUEST_SESSION_SECRET must be at least 32 characters long for cryptographic security"
+            )
+        return value if isinstance(value, SecretStr) else SecretStr(val_str)
+
+    @field_validator("trusted_proxies", mode="before")
+    @classmethod
+    def parse_trusted_proxies(cls, value: Any) -> list[str]:
+        """Parse trusted proxy entries into a clean list of hostnames/IPs."""
+        if isinstance(value, str):
+            stripped = value.strip()
+            if stripped.startswith("[") and stripped.endswith("]"):
+                try:
+                    parsed = json.loads(stripped)
+                    if isinstance(parsed, list):
+                        value = parsed
+                except json.JSONDecodeError as err:
+                    raise ValueError(f"Malformed JSON in trusted proxies: {err}") from err
+            else:
+                value = [item.strip() for item in stripped.split(",") if item.strip()]
+        if not isinstance(value, list) or not value:
+            return ["127.0.0.1", "::1", "localhost", "testclient"]
+        return [str(item).strip() for item in value if str(item).strip()]
+
     @model_validator(mode="after")
     def validate_budget_and_paths(self) -> "Settings":
-        """Validate budget ranges and resolve dataset paths from data_dir."""
+        """Validate budget ranges, production security requirements, and dataset paths."""
         if self.min_event_budget_inr >= self.max_event_budget_inr:
             raise ValueError(
                 f"MIN_EVENT_BUDGET_INR ({self.min_event_budget_inr}) must be strictly less than "
                 f"MAX_EVENT_BUDGET_INR ({self.max_event_budget_inr})"
             )
+
+        # Production security policy enforcement
+        if self.app_env == "production":
+            if self.secure_cookies is False:
+                raise ValueError("Insecure cookies (secure_cookies=False) are strictly forbidden in production")
+            if self.allow_guest_mode and not self.guest_session_secret:
+                raise ValueError(
+                    "Production deployments with guest mode enabled require an explicit, stable "
+                    "GUEST_SESSION_SECRET of at least 32 characters to support multi-worker environments."
+                )
 
         # Resolve dataset paths if not explicitly configured
         if self.crisis_dataset_path is None:

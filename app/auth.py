@@ -17,6 +17,7 @@ import hmac
 import json
 import logging
 import time
+import urllib.error
 from base64 import urlsafe_b64decode, urlsafe_b64encode
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -24,8 +25,10 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import jwt
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from fastapi import Depends, Request
-from jwt import PyJWKClient
+from jwt import PyJWKClient, PyJWKClientConnectionError
 
 from app.config import Settings, get_settings
 
@@ -40,10 +43,11 @@ logger = logging.getLogger(__name__)
 class AuthenticationError(Exception):
     """Raised when request authentication fails."""
 
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(self, code: str, message: str, status_code: int = 401) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
+        self.status_code = status_code
 
 
 # ==============================================================================
@@ -106,6 +110,44 @@ class SupabaseTokenVerifier:
                 lifespan=300,
             )
 
+    @staticmethod
+    def _ensure_rsa_public_key(raw_key: Any) -> rsa.RSAPublicKey:
+        """Ensure the provided key is or parses to an RSA public key."""
+        if isinstance(raw_key, rsa.RSAPublicKey):
+            return raw_key
+        if isinstance(raw_key, (str, bytes)):
+            pem_bytes = raw_key.encode("utf-8") if isinstance(raw_key, str) else raw_key
+            try:
+                loaded = serialization.load_pem_public_key(pem_bytes)
+                if isinstance(loaded, rsa.RSAPublicKey):
+                    return loaded
+            except Exception:
+                pass
+        raise AuthenticationError(
+            "INVALID_KEY_TYPE",
+            "Algorithm requires an RSA public key, but an incompatible key type was provided.",
+            status_code=401,
+        )
+
+    @staticmethod
+    def _ensure_ec_public_key(raw_key: Any) -> ec.EllipticCurvePublicKey:
+        """Ensure the provided key is or parses to an EC public key."""
+        if isinstance(raw_key, ec.EllipticCurvePublicKey):
+            return raw_key
+        if isinstance(raw_key, (str, bytes)):
+            pem_bytes = raw_key.encode("utf-8") if isinstance(raw_key, str) else raw_key
+            try:
+                loaded = serialization.load_pem_public_key(pem_bytes)
+                if isinstance(loaded, ec.EllipticCurvePublicKey):
+                    return loaded
+            except Exception:
+                pass
+        raise AuthenticationError(
+            "INVALID_KEY_TYPE",
+            "Algorithm requires an EC public key, but an incompatible key type was provided.",
+            status_code=401,
+        )
+
     def verify_token(self, token: str) -> AuthenticatedUser:
         """Verify token signature, expiry, audience, issuer, and sub claim.
 
@@ -151,7 +193,7 @@ class SupabaseTokenVerifier:
                 f"Algorithm '{normalized_alg}' is not in the allowed algorithms list.",
             )
 
-        # 2. Resolve verification key based on algorithm
+        # 2. Resolve verification key based on algorithm with strict key-type binding
         key: Any = None
         if normalized_alg.startswith("HS"):
             jwt_secret = self.settings.get_supabase_jwt_secret_value()
@@ -160,56 +202,114 @@ class SupabaseTokenVerifier:
                 raise AuthenticationError(
                     "AUTH_NOT_CONFIGURED",
                     "Authentication verification credentials are not configured on the server.",
+                    status_code=401,
+                )
+            # Ensure asymmetric PEM key cannot be used as HMAC secret (algorithm confusion protection)
+            if jwt_secret.strip().startswith("-----BEGIN"):
+                logger.error("Asymmetric key detected in SUPABASE_JWT_SECRET; cannot be used for HMAC.")
+                raise AuthenticationError(
+                    "INVALID_KEY_TYPE",
+                    "Asymmetric key cannot be used for symmetric HMAC algorithm.",
+                    status_code=401,
                 )
             key = jwt_secret
-        elif normalized_alg.startswith("RS") or normalized_alg.startswith("ES"):
-            public_key = self.settings.get_supabase_jwt_public_key_value()
-            if public_key:
-                key = public_key
+        elif normalized_alg.startswith("RS"):
+            raw_key: Any = None
+            if self.settings.supabase_jwt_public_key:
+                raw_key = self.settings.get_supabase_jwt_public_key_value()
             elif self._jwks_client:
                 try:
                     signing_key = self._jwks_client.get_signing_key_from_jwt(token)
-                    key = signing_key.key
+                    raw_key = signing_key.key
+                except (PyJWKClientConnectionError, urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+                    logger.error("Failed to connect to JWKS endpoint: %s", exc)
+                    raise AuthenticationError(
+                        "AUTH_PROVIDER_UNAVAILABLE",
+                        "Authentication service is temporarily unavailable. Please retry shortly.",
+                        status_code=503,
+                    ) from exc
                 except Exception as exc:
                     logger.warning("Failed to obtain JWKS signing key: %s", type(exc).__name__)
                     raise AuthenticationError(
-                        "INVALID_SIGNATURE", "Unable to retrieve signing key for token."
+                        "INVALID_SIGNATURE",
+                        "Unable to retrieve signing key for token.",
+                        status_code=401,
                     ) from exc
             else:
-                logger.error("Asymmetric token received but neither public key nor JWKS is configured.")
+                logger.error("RS token received but neither public key nor JWKS is configured.")
                 raise AuthenticationError(
                     "AUTH_NOT_CONFIGURED",
                     "Asymmetric verification credentials are not configured on the server.",
+                    status_code=401,
                 )
+            key = self._ensure_rsa_public_key(raw_key)
+        elif normalized_alg.startswith("ES"):
+            raw_key = None
+            if self.settings.supabase_jwt_public_key:
+                raw_key = self.settings.get_supabase_jwt_public_key_value()
+            elif self._jwks_client:
+                try:
+                    signing_key = self._jwks_client.get_signing_key_from_jwt(token)
+                    raw_key = signing_key.key
+                except (PyJWKClientConnectionError, urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+                    logger.error("Failed to connect to JWKS endpoint: %s", exc)
+                    raise AuthenticationError(
+                        "AUTH_PROVIDER_UNAVAILABLE",
+                        "Authentication service is temporarily unavailable. Please retry shortly.",
+                        status_code=503,
+                    ) from exc
+                except Exception as exc:
+                    logger.warning("Failed to obtain JWKS signing key: %s", type(exc).__name__)
+                    raise AuthenticationError(
+                        "INVALID_SIGNATURE",
+                        "Unable to retrieve signing key for token.",
+                        status_code=401,
+                    ) from exc
+            else:
+                logger.error("ES token received but neither public key nor JWKS is configured.")
+                raise AuthenticationError(
+                    "AUTH_NOT_CONFIGURED",
+                    "Asymmetric verification credentials are not configured on the server.",
+                    status_code=401,
+                )
+            key = self._ensure_ec_public_key(raw_key)
         else:
-            raise AuthenticationError("INVALID_ALGORITHM", f"Unsupported algorithm family: {normalized_alg}")
+            raise AuthenticationError(
+                "INVALID_ALGORITHM",
+                f"Unsupported algorithm family: {normalized_alg}",
+                status_code=401,
+            )
 
         # 3. Cryptographically decode and verify claims
+        require_claims = ["exp", "sub"]
         decode_kwargs: dict[str, Any] = {
             "algorithms": [normalized_alg],
-            "options": {"require": ["exp", "sub"]},
         }
         if self.settings.supabase_jwt_audience:
             decode_kwargs["audience"] = self.settings.supabase_jwt_audience
+            require_claims.append("aud")
         if self.settings.resolved_jwt_issuer:
             decode_kwargs["issuer"] = self.settings.resolved_jwt_issuer
+            require_claims.append("iss")
+        decode_kwargs["options"] = {"require": require_claims}
 
         try:
             payload = jwt.decode(token, key=key, **decode_kwargs)
         except jwt.MissingRequiredClaimError as exc:
-            raise AuthenticationError("INVALID_TOKEN", f"Token is missing required claim: {exc}") from exc
+            raise AuthenticationError("INVALID_TOKEN", f"Token is missing required claim: {exc}", status_code=401) from exc
         except jwt.ExpiredSignatureError as exc:
-            raise AuthenticationError("TOKEN_EXPIRED", "Token has expired.") from exc
+            raise AuthenticationError("TOKEN_EXPIRED", "Token has expired.", status_code=401) from exc
         except jwt.InvalidAudienceError as exc:
-            raise AuthenticationError("INVALID_AUDIENCE", "Token audience is invalid.") from exc
+            raise AuthenticationError("INVALID_AUDIENCE", "Token audience is invalid.", status_code=401) from exc
         except jwt.InvalidIssuerError as exc:
-            raise AuthenticationError("INVALID_ISSUER", "Token issuer is invalid.") from exc
+            raise AuthenticationError("INVALID_ISSUER", "Token issuer is invalid.", status_code=401) from exc
         except jwt.InvalidSignatureError as exc:
-            raise AuthenticationError("INVALID_SIGNATURE", "Token signature is invalid.") from exc
+            raise AuthenticationError("INVALID_SIGNATURE", "Token signature is invalid.", status_code=401) from exc
         except jwt.InvalidAlgorithmError as exc:
-            raise AuthenticationError("INVALID_ALGORITHM", "Token algorithm is invalid.") from exc
-        except (jwt.DecodeError, jwt.InvalidTokenError) as exc:
-            raise AuthenticationError("INVALID_TOKEN", "Token is malformed or invalid.") from exc
+            raise AuthenticationError("INVALID_ALGORITHM", "Token algorithm is invalid.", status_code=401) from exc
+        except (jwt.PyJWTError, TypeError, ValueError) as exc:
+            logger.warning("JWT verification failed with %s: %s", type(exc).__name__, exc)
+            raise AuthenticationError("INVALID_TOKEN", "Token is malformed or invalid.", status_code=401) from exc
 
         # 4. Validate subject claim (user ID)
         sub = payload.get("sub")
@@ -319,6 +419,12 @@ def create_guest_session_token(
     elif isinstance(secret, str):
         secret = secret.encode("utf-8")
 
+    if not secret or len(secret) < 32:
+        raise AuthenticationError(
+            "INVALID_GUEST_SESSION",
+            "Guest signing secret is invalid or insufficiently configured.",
+        )
+
     now_ts = int(time.time())
     exp_ts = now_ts + ttl_seconds
     expires_at = datetime.fromtimestamp(exp_ts, tz=timezone.utc)
@@ -382,6 +488,12 @@ def verify_guest_session_token(
     elif isinstance(secret, str):
         secret = secret.encode("utf-8")
 
+    if not secret or len(secret) < 32:
+        raise AuthenticationError(
+            "INVALID_GUEST_SESSION",
+            "Guest signing secret is invalid or insufficiently configured.",
+        )
+
     expected_sig = hmac.new(secret, payload_b64.encode("ascii"), hashlib.sha256).digest()
     expected_sig_b64 = urlsafe_b64encode(expected_sig).decode("ascii").rstrip("=")
 
@@ -444,6 +556,7 @@ async def get_current_user_or_guest(
         - If X-Guest-Session-ID header is present: verified cryptographically.
           Invalid, forged, raw, or expired tokens fail with 401.
         - If planproof_guest_session cookie is present: verified cryptographically.
+          Invalid, forged, raw, or expired tokens fail with 401.
         - If neither is present: a new isolated server-issued session is created for this request,
           preventing any persistent shared guest identity.
     """
@@ -477,18 +590,17 @@ async def get_current_user_or_guest(
     # Check cookie fallback
     guest_cookie = request.cookies.get("planproof_guest_session")
     if guest_cookie and guest_cookie.strip():
-        try:
-            verified_guest_id = verify_guest_session_token(guest_cookie.strip(), secret=secret)
-            return GuestUser(user_id=verified_guest_id)
-        except AuthenticationError:
-            pass
+        # Strictly verify client-supplied guest session cookie
+        verified_guest_id = verify_guest_session_token(guest_cookie.strip(), secret=secret)
+        return GuestUser(user_id=verified_guest_id)
 
     # No token provided: generate a fresh isolated server-issued session
     # This prevents unauthenticated callers from ever sharing a persistent 'None' identity
-    new_token, new_guest_id, _ = create_guest_session_token(
+    new_token, new_guest_id, expires_at = create_guest_session_token(
         ttl_seconds=settings.guest_session_ttl_seconds,
         secret=secret,
     )
     request.state.new_guest_token = new_token
+    request.state.new_guest_expires_at = expires_at
     return GuestUser(user_id=new_guest_id)
 

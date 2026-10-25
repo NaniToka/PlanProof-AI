@@ -456,3 +456,266 @@ def test_user_repr_does_not_leak_sensitive_claims() -> None:
     assert "secret-jwt" not in user_repr
     assert "password_hash" not in user_repr
     assert "sensitive-email@secret.com" not in user_repr
+
+
+@pytest.mark.asyncio
+async def test_invalid_bearer_with_valid_guest_token_fails_closed() -> None:
+    """Verify an invalid Bearer token fails with 401 even if a valid guest token is also supplied."""
+    from app.auth import create_guest_session_token
+
+    valid_guest_token, _, _ = create_guest_session_token(secret=TEST_SECRET)
+    req = make_request({
+        "Authorization": "Bearer invalid.fake.token",
+        "X-Guest-Session-ID": valid_guest_token,
+    })
+    settings = Settings(
+        storage_backend="memory",
+        app_env="development",
+        supabase_jwt_secret=SecretStr(TEST_SECRET),
+    )
+    verifier = SupabaseTokenVerifier(settings=settings)
+
+    with pytest.raises(AuthenticationError) as exc:
+        await get_current_user_or_guest(req, verifier=verifier, settings=settings)
+    assert exc.value.code in ("INVALID_TOKEN", "INVALID_ALGORITHM")
+
+
+def test_jwks_connection_failure_distinguished_as_service_unavailable() -> None:
+    """Verify that network outages talking to JWKS endpoint return AUTH_PROVIDER_UNAVAILABLE with status 503."""
+    import base64
+    import json
+    from jwt import PyJWKClientConnectionError
+
+    settings = Settings(
+        supabase_url="https://example.supabase.co",
+        supabase_jwt_algorithms=["RS256"],
+    )
+    mock_jwks = MagicMock()
+    mock_jwks.get_signing_key_from_jwt.side_effect = PyJWKClientConnectionError(
+        "Connection timed out reaching example.supabase.co"
+    )
+    verifier = SupabaseTokenVerifier(settings=settings, jwks_client=mock_jwks)
+
+    h = base64.urlsafe_b64encode(json.dumps({"alg": "RS256", "typ": "JWT"}).encode()).decode().rstrip("=")
+    p = base64.urlsafe_b64encode(json.dumps({"sub": str(uuid4()), "exp": 9999999999}).encode()).decode().rstrip("=")
+    token = f"{h}.{p}.fakesig"
+
+    with pytest.raises(AuthenticationError) as exc_info:
+        verifier.verify_token(token)
+
+    assert exc_info.value.code == "AUTH_PROVIDER_UNAVAILABLE"
+    assert exc_info.value.status_code == 503
+
+
+# ==============================================================================
+# 6. Key-Type Binding & Asymmetric Algorithm Confusion Security Tests
+# ==============================================================================
+
+
+@pytest.fixture
+def ec_keypair() -> tuple[bytes, bytes]:
+    """Generate in-memory ECDSA (SECP256R1) private/public keypair PEM bytes."""
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    private_key = ec.generate_private_key(ec.SECP256R1())
+    private_pem = private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    public_pem = private_key.public_key().public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    return private_pem, public_pem
+
+
+def test_verify_valid_es256_with_ec_public_key(ec_keypair: tuple[bytes, bytes]) -> None:
+    """Verify ES256 ECDSA token verification using PEM public key configuration."""
+    priv_pem, pub_pem = ec_keypair
+    user_id = uuid4()
+    exp = datetime.now(timezone.utc) + timedelta(hours=1)
+    payload = {
+        "sub": str(user_id),
+        "email": "ecdsa@planproof.ai",
+        "aud": "authenticated",
+        "exp": int(exp.timestamp()),
+    }
+    token = create_token(payload, secret_or_key=priv_pem, algorithm="ES256")
+
+    settings = Settings(supabase_jwt_public_key=SecretStr(pub_pem.decode("utf-8")))
+    verifier = SupabaseTokenVerifier(settings=settings)
+
+    user = verifier.verify_token(token)
+    assert user.user_id == user_id
+    assert user.email == "ecdsa@planproof.ai"
+
+
+def test_verify_wrong_key_type_rsa_configured_with_ec_token(
+    rsa_keypair: tuple[bytes, bytes], ec_keypair: tuple[bytes, bytes]
+) -> None:
+    """Verify token signed with ES256 is rejected when server is configured with RSA key."""
+    ec_priv, _ = ec_keypair
+    _, rsa_pub = rsa_keypair
+    user_id = uuid4()
+    exp = datetime.now(timezone.utc) + timedelta(hours=1)
+    payload = {
+        "sub": str(user_id),
+        "aud": "authenticated",
+        "exp": int(exp.timestamp()),
+    }
+    token = create_token(payload, secret_or_key=ec_priv, algorithm="ES256")
+
+    settings = Settings(
+        supabase_jwt_public_key=SecretStr(rsa_pub.decode("utf-8")),
+        supabase_jwt_algorithms=["RS256", "ES256"],
+    )
+    verifier = SupabaseTokenVerifier(settings=settings)
+
+    with pytest.raises(AuthenticationError) as exc:
+        verifier.verify_token(token)
+    assert exc.value.code == "INVALID_KEY_TYPE"
+    assert "EC public key" in exc.value.message
+
+
+def test_verify_wrong_key_type_ec_configured_with_rsa_token(
+    rsa_keypair: tuple[bytes, bytes], ec_keypair: tuple[bytes, bytes]
+) -> None:
+    """Verify token signed with RS256 is rejected when server is configured with EC key."""
+    rsa_priv, _ = rsa_keypair
+    _, ec_pub = ec_keypair
+    user_id = uuid4()
+    exp = datetime.now(timezone.utc) + timedelta(hours=1)
+    payload = {
+        "sub": str(user_id),
+        "aud": "authenticated",
+        "exp": int(exp.timestamp()),
+    }
+    token = create_token(payload, secret_or_key=rsa_priv, algorithm="RS256")
+
+    settings = Settings(
+        supabase_jwt_public_key=SecretStr(ec_pub.decode("utf-8")),
+        supabase_jwt_algorithms=["RS256", "ES256"],
+    )
+    verifier = SupabaseTokenVerifier(settings=settings)
+
+    with pytest.raises(AuthenticationError) as exc:
+        verifier.verify_token(token)
+    assert exc.value.code == "INVALID_KEY_TYPE"
+    assert "RSA public key" in exc.value.message
+
+
+def test_verify_algorithm_confusion_hs256_with_asymmetric_key(
+    rsa_keypair: tuple[bytes, bytes],
+) -> None:
+    """Verify that an asymmetric key configured in SUPABASE_JWT_SECRET is rejected for HMAC."""
+    _, pub_pem = rsa_keypair
+    settings = Settings(supabase_jwt_secret=SecretStr(pub_pem.decode("utf-8")))
+    verifier = SupabaseTokenVerifier(settings=settings)
+
+    token = create_token({"sub": str(uuid4()), "exp": 9999999999, "aud": "authenticated"})
+    with pytest.raises(AuthenticationError) as exc:
+        verifier.verify_token(token)
+    assert exc.value.code == "INVALID_KEY_TYPE"
+    assert "Asymmetric key cannot be used for symmetric HMAC" in exc.value.message
+
+
+def test_verify_jwks_wrong_key_type_rejected(rsa_keypair: tuple[bytes, bytes], ec_keypair: tuple[bytes, bytes]) -> None:
+    """Verify that if JWKS returns an EC key for an RS256 token, it is rejected with INVALID_KEY_TYPE."""
+    rsa_priv, _ = rsa_keypair
+    _, ec_pub = ec_keypair
+    user_id = uuid4()
+    token = create_token({"sub": str(user_id), "exp": 9999999999, "aud": "authenticated"}, secret_or_key=rsa_priv, algorithm="RS256")
+
+    mock_signing_key = MagicMock()
+    # Mock returns EC key instead of RSA key
+    mock_signing_key.key = ec_pub.decode("utf-8")
+    mock_jwks = MagicMock()
+    mock_jwks.get_signing_key_from_jwt.return_value = mock_signing_key
+
+    settings = Settings(supabase_jwks_url="https://mock.supabase.co/jwks.json", supabase_jwt_algorithms=["RS256"])
+    verifier = SupabaseTokenVerifier(settings=settings, jwks_client=mock_jwks)
+
+    with pytest.raises(AuthenticationError) as exc:
+        verifier.verify_token(token)
+    assert exc.value.code == "INVALID_KEY_TYPE"
+
+
+def test_verify_missing_required_claims_aud_and_iss() -> None:
+    """Verify that missing aud or iss claims are rejected when configured in settings."""
+    user_id = uuid4()
+    token_no_aud = create_token({"sub": str(user_id), "exp": 9999999999})
+
+    settings = Settings(
+        supabase_jwt_secret=SecretStr(TEST_SECRET),
+        supabase_jwt_audience="authenticated",
+        supabase_jwt_issuer="https://my.supabase.co/auth/v1",
+    )
+    verifier = SupabaseTokenVerifier(settings=settings)
+
+    with pytest.raises(AuthenticationError) as exc:
+        verifier.verify_token(token_no_aud)
+    assert exc.value.code == "INVALID_TOKEN"
+    assert "missing" in exc.value.message.lower()
+
+
+def test_verify_malformed_token_payload_fails_closed() -> None:
+    """Verify that corrupt base64 payload fails closed with 401 INVALID_TOKEN."""
+    settings = Settings(supabase_jwt_secret=SecretStr(TEST_SECRET))
+    verifier = SupabaseTokenVerifier(settings=settings)
+
+    with pytest.raises(AuthenticationError) as exc:
+        verifier.verify_token("eyJhbGciOiJIUzI1NiJ9.corrupt!!!payload.fakesig")
+    assert exc.value.code == "INVALID_TOKEN"
+
+
+# ==============================================================================
+# 7. Guest Signing Secret Lifecycle Tests
+# ==============================================================================
+
+
+def test_guest_signing_secret_validation_in_production() -> None:
+    """Verify production fails fast if guest sessions are enabled without GUEST_SESSION_SECRET."""
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError) as exc:
+        Settings(app_env="production", allow_guest_mode=True, guest_session_secret=None)
+    assert "GUEST_SESSION_SECRET" in str(exc.value)
+
+
+def test_guest_signing_secret_too_short_rejected() -> None:
+    """Verify secrets shorter than 32 characters are rejected."""
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError) as exc:
+        Settings(guest_session_secret=SecretStr("short-secret-under-32-chars"))
+    assert "at least 32 characters" in str(exc.value)
+
+
+def test_guest_secret_fallback_forbidden_in_production_and_postgres() -> None:
+    """Calling get_guest_session_secret_bytes in production/postgres without secret raises ConfigurationError."""
+    from app.config import ConfigurationError
+
+    # Production with guest mode False (so Settings instantiates) but no guest secret
+    prod_settings = Settings(app_env="production", allow_guest_mode=False, guest_session_secret=None)
+    with pytest.raises(ConfigurationError):
+        prod_settings.get_guest_session_secret_bytes()
+
+    # PostgreSQL storage backend without guest secret
+    pg_settings = Settings(storage_backend="postgres", guest_session_secret=None)
+    with pytest.raises(ConfigurationError):
+        pg_settings.get_guest_session_secret_bytes()
+
+
+def test_create_and_verify_guest_token_rejects_insufficient_secret() -> None:
+    """create_guest_session_token and verify_guest_session_token reject empty or too-short secrets."""
+    from app.auth import create_guest_session_token, verify_guest_session_token
+
+    with pytest.raises(AuthenticationError) as exc:
+        create_guest_session_token(secret="too-short")
+    assert exc.value.code == "INVALID_GUEST_SESSION"
+
+    with pytest.raises(AuthenticationError) as exc:
+        verify_guest_session_token("gst.fake.token", secret="too-short")
+    assert exc.value.code == "INVALID_GUEST_SESSION"
+
