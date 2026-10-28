@@ -7,6 +7,7 @@
 > - **Human Authorization Required**: Execution requires explicit, written approval from the designated release engineer or technical lead.
 > - **Never Execute Against Production**: Verify target project credentials before issuing any command.
 > - **Never Run Rollback Scripts on Shared Databases**: Down migration scripts in `migrations/down/` contain destructive `DROP TABLE ... CASCADE` statements. They are strictly prohibited on staging and production databases.
+> - **Local Safety Boundary**: This task is local documentation only. No remote database connection, SQL execution, backup, account creation, or data deletion is performed during local development.
 
 ---
 
@@ -18,13 +19,14 @@ Before any terminal command is run, the human release engineer must confirm:
 - [ ] The target Supabase project is confirmed to be **Staging** (project ref matching `<staging-project-ref>`, never production).
 - [ ] Network routing permits direct session connections to PostgreSQL port `5432` (e.g. via direct IPv6 host or AWS IPv4 session pooler). Transaction pooler port `6543` must **not** be used for migrations.
 - [ ] Staging database credentials are held locally in environment variables and are **never** committed or printed to logs.
-- [ ] A dedicated pre-migration logical backup is planned (Section 3).
+- [ ] A dedicated pre-migration logical backup and recovery plan are reviewed and approved (Section 3).
+- [ ] Staging project administrators are on standby in case elevated `auth` schema trigger intervention is required (Section 4.2).
 
 ---
 
 ## 2. Target Environment Identity & Secret-Safe Verification
 
-To prevent accidental execution against production or misconfigured instances, perform a dedicated staging-identity check.
+To prevent accidental execution against production or misconfigured instances, perform a dedicated staging-identity check independent of port numbers.
 
 ### 2.1 Set Up Environment Variables (Secret-Safe)
 ```bash
@@ -70,17 +72,26 @@ SELECT
 *Expected Result:*
 - `db_name`: `postgres`
 - `session_role`: `postgres` (or administrative release role)
-- Stop Condition: If the connection fails or `session_role` is unprivileged (e.g. `anon` or `planproof_app`), **STOP immediately**.
+- **Stop Condition:** If the connection fails, if `current_database()` does not match expectations, or if `session_role` is unprivileged (e.g. `anon` or `planproof_app`), **STOP immediately**.
 
 ---
 
-## 3. Pre-Migration Staging Backup
+## 3. Pre-Migration Staging Backup & Recovery Protocol
 
-Staging databases frequently hold testing datasets, staging test profiles, or seed configurations. To guarantee non-destructive recovery, take a logical schema and data backup prior to applying migrations:
+Staging databases frequently hold testing datasets, staging test profiles, or seed configurations. Prior to applying migrations, the operator must execute and rigorously validate a logical backup.
 
+> [!WARNING]
+> **Scope & Limitations of Logical Backup**:
+> The command below captures a logical dump of the `public` schema (`--schema=public`).
+> - **What is captured:** Application tables, views, sequences, types, and data in `public`.
+> - **What is NOT captured:** Managed Supabase Auth data (`auth.users`, identities, refresh tokens, MFA factors), Storage metadata (`storage.buckets`, `storage.objects`), Vault secrets, Edge functions, database extensions, or project configuration settings.
+> - **Recovery Assumption Warning:** A dump must never be assumed recoverable solely because the command exited without error. A valid restore plan must be approved before proceeding.
+
+### 3.1 Execute Logical Backup
 ```bash
-# Generate a timestamped pre-migration custom format dump
-BACKUP_FILE="staging_backup_pre_migration_$(date +%Y%m%d_%H%M%S).dump"
+# Generate timestamped backup file with restrictive permissions
+BACKUP_FILE="staging_backup_public_pre_migration_$(date +%Y%m%d_%H%M%S).dump"
+umask 077
 
 echo "Creating logical backup in ${BACKUP_FILE}..."
 pg_dump "$MIGRATION_DATABASE_URL" \
@@ -88,11 +99,43 @@ pg_dump "$MIGRATION_DATABASE_URL" \
     --format=custom \
     --file="$BACKUP_FILE"
 
-echo "Backup completed successfully. Size: $(du -h "$BACKUP_FILE" | cut -f1)"
+DUMP_STATUS=$?
+if [ $DUMP_STATUS -ne 0 ]; then
+    echo "ERROR: pg_dump failed with exit code ${DUMP_STATUS}! Aborting migration."
+    exit 1
+fi
+
+# Ensure restrictive file permissions
+chmod 600 "$BACKUP_FILE"
 ```
 
-> [!IMPORTANT]
-> If any migration failure occurs later, **do NOT execute down scripts** (`migrations/down/`). Use the recovery workflow in Section 4.3 or restore from this backup file via `pg_restore`.
+### 3.2 Validate Backup Existence, Non-Empty Size, and Dump Integrity
+```bash
+# 1. Assert backup file exists and is non-empty
+if [ ! -s "$BACKUP_FILE" ]; then
+    echo "ERROR: Backup file ${BACKUP_FILE} is missing or has zero bytes! Aborting migration."
+    exit 1
+fi
+
+# 2. Validate dump archive table of contents via pg_restore
+pg_restore --list "$BACKUP_FILE" > /dev/null 2>&1
+RESTORE_CHECK_STATUS=$?
+if [ $RESTORE_CHECK_STATUS -ne 0 ]; then
+    echo "ERROR: pg_restore --list validation failed (code ${RESTORE_CHECK_STATUS})! Dump file may be corrupt. Aborting migration."
+    exit 1
+fi
+
+echo "Backup validated: ${BACKUP_FILE} exists, is non-empty ($(du -h "$BACKUP_FILE" | cut -f1)), and archive header is verified."
+```
+
+### 3.3 Recovery Decision Rules
+- If any migration fails, **do NOT execute down scripts** (`migrations/down/`).
+- Prefer **fixing forward** (diagnosing the root cause and resuming from the failed migration boundary).
+- If the public schema becomes corrupted or inconsistent, restore using `pg_restore`:
+  ```bash
+  # RESTORE WORKFLOW (Requires human review and confirmation)
+  # pg_restore --clean --if-exists --schema=public -d "$MIGRATION_DATABASE_URL" "$BACKUP_FILE"
+  ```
 
 ---
 
@@ -122,6 +165,11 @@ Migrations must be applied in strict forward order (`00001` through `00009`). Ea
 ```bash
 echo "Applying migrations/00001_create_profiles.sql..."
 psql "$MIGRATION_DATABASE_URL" -v ON_ERROR_STOP=1 --single-transaction -f "migrations/00001_create_profiles.sql"
+
+if [ $? -ne 0 ]; then
+    echo "ERROR: Migration 00001 failed! Halting immediately."
+    exit 1
+fi
 ```
 
 #### Phase 2: Mandatory Intermediate Trigger Gate (Post-00001 Verification)
@@ -161,11 +209,13 @@ WHERE n.nspname = 'auth'
 2. `table_schema`: `auth`, `table_name`: `users`, `trigger_name`: `on_auth_user_created`, `trigger_status`: `O` (Enabled), `trigger_procedure`: `handle_new_user`.
 
 > [!CAUTION]
-> **STOP CONDITION (Trigger Failure)**:
-> If `on_auth_user_created` is missing or `tgenabled != 'O'`, **DO NOT PROCEED**.
-> - The executing database role lacks required permissions on `auth.users`.
-> - Contact your Supabase organization administrator to grant `TRIGGER` on `auth.users` to `postgres`, or execute the trigger block in the Supabase Dashboard SQL Editor as `supabase_admin`.
-> - Halt further migrations until this check passes.
+> **TRIGGER PRIVILEGE BOUNDARY & STOP CONDITION**:
+> - **Catalog Visibility != Functional Proof**: Visibility of the trigger in `pg_trigger` confirms registration in PostgreSQL catalogs. It does **not** prove that GoTrue has execution permissions, that the payload mapping works, or that profile provisioning succeeds during live signup.
+> - **Supabase-Managed Object Boundary**: In Supabase, `auth.users` is owned and managed by GoTrue / `supabase_auth_admin`. Standard migration roles (such as `postgres` or application roles) cannot grant privileges on or modify Supabase-managed authentication internals.
+> - **Stop Condition**: If `00001_create_profiles.sql` fails to create the trigger (raising `insufficient_privilege`) or if the catalog query returns 0 rows or `tgenabled != 'O'`:
+>   1. **HALT IMMEDIATELY**. Do not apply migrations `00002` through `00009`.
+>   2. **DO NOT attempt to bypass Supabase security boundaries** or alter `auth` schema ownership.
+>   3. **Escalate to the Supabase Project Owner**: Have an administrator inspect the trigger setup via the official Supabase Dashboard SQL Editor (running under `supabase_admin`).
 
 ---
 
@@ -258,11 +308,11 @@ ORDER BY table_name;
 
 ---
 
-## 6. End-to-End Functional Verification (Disposable Staging Account)
+## 6. End-to-End Functional Verification (Disposable Staging Accounts)
 
 > [!NOTE]
 > Catalog inspection proves that tables, triggers, and policies are defined. It does **not** prove that Supabase GoTrue event emission, network routing, and application tenant isolation operate end-to-end.
-> The operator must execute this functional test using disposable test accounts.
+> The operator must execute this functional test using explicitly recorded disposable test accounts.
 
 ### 6.1 Verified API Route Inventory
 
@@ -308,7 +358,7 @@ SIGNUP_RESPONSE=$(curl -s -X POST "${STAGING_SUPABASE_URL}/auth/v1/signup" \
 USER_A_ID=$(echo "$SIGNUP_RESPONSE" | jq -r '.user.id')
 USER_A_TOKEN=$(echo "$SIGNUP_RESPONSE" | jq -r '.access_token')
 
-echo "Tenant A created with ID: ${USER_A_ID}"
+echo "RECORDED DISPOSABLE USER A -> UUID: ${USER_A_ID}, EMAIL: ${TEST_USER_A_EMAIL}"
 ```
 
 #### Step 3: Verify Profile Provisioning Trigger Fired
@@ -363,7 +413,10 @@ SIGNUP_B=$(curl -s -X POST "${STAGING_SUPABASE_URL}/auth/v1/signup" \
     -H "Content-Type: application/json" \
     -d "{\"email\":\"${TEST_USER_B_EMAIL}\",\"password\":\"${TEST_PASSWORD}\"}")
 
+USER_B_ID=$(echo "$SIGNUP_B" | jq -r '.user.id')
 USER_B_TOKEN=$(echo "$SIGNUP_B" | jq -r '.access_token')
+
+echo "RECORDED DISPOSABLE USER B -> UUID: ${USER_B_ID}, EMAIL: ${TEST_USER_B_EMAIL}"
 
 # Attempt to GET Tenant A's event using Tenant B's JWT (Expect 404 Not Found)
 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
@@ -380,18 +433,45 @@ fi
 
 ---
 
-## 7. Staging Teardown & Test Data Cleanup (Non-Destructive)
+## 7. Safe Staging Teardown & Exact Disposable-Account Cleanup
 
-After verification, clean up only the disposable test accounts. Do **not** run down migrations.
+> [!CAUTION]
+> **EXACT DISPOSABLE-ACCOUNT CLEANUP PROTOCOL**:
+> - **Never Use Pattern Deletion**: Never run `DELETE ... WHERE email LIKE '%...'` or delete users by domain/prefix match. Broad queries risk deleting other staging testers or pre-existing QA accounts.
+> - **Exact Recorded Identities Only**: Deletion must target **only** the exact UUIDs (`USER_A_ID`, `USER_B_ID`) and exact emails (`TEST_USER_A_EMAIL`, `TEST_USER_B_EMAIL`) explicitly recorded in Step 6.2.
+> - **Human Confirmation Required**: Verify the exact identities and confirm deletion before proceeding.
+> - **Never Run by Automated Tasks**: Cleanup must never be executed automatically by local agents or test runners.
+
+### Option A: Supabase Auth Administrative Workflow (Recommended)
+The safest, supported way to remove test accounts without issuing direct SQL against `auth.users`:
+1. Open the Supabase Dashboard for the Staging project.
+2. Navigate to **Authentication** $\rightarrow$ **Users**.
+3. Search for the exact recorded User UUID (`USER_A_ID`, then `USER_B_ID`).
+4. Verify the email matches `TEST_USER_A_EMAIL` and `TEST_USER_B_EMAIL`.
+5. Click **Delete User** for each account. GoTrue handles deletion and cascades to `public.profiles`, `public.events`, and child records.
+
+Alternatively, using the official Supabase Admin API via a secure release script:
+```bash
+# Example using Supabase Service-Role Admin API (curl)
+# curl -X DELETE "${STAGING_SUPABASE_URL}/auth/v1/admin/users/${USER_A_ID}" \
+#      -H "apikey: ${SUPABASE_SERVICE_ROLE_KEY}" \
+#      -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}"
+```
+
+### Option B: Exact SQL Deletion (Requires Elevated Privileges & Human Confirmation)
+If the operator chooses to execute SQL deletion, observe the following constraints:
+- **Privilege Requirement**: Deleting directly from `auth.users` requires `supabase_admin` or `service_role` superuser privileges; unprivileged connection roles (e.g. `planproof_app`) will fail with permission denied.
+- **Cascade Implication**: Deleting from `auth.users` triggers `ON DELETE CASCADE` to `public.profiles`, `public.events`, `public.event_budgets`, `public.event_milestone_statuses`, `public.event_vendor_checklist_items`, `public.crisis_recovery_records`, and `public.crisis_recovery_actions`.
 
 ```bash
-# Delete test users from auth.users (cascades automatically to public.profiles, events, and child rows)
+# Verify both UUID and exact email match before deletion (exact match only)
 psql "$MIGRATION_DATABASE_URL" -v ON_ERROR_STOP=1 -c "
 DELETE FROM auth.users 
-WHERE email IN ('${TEST_USER_A_EMAIL}', '${TEST_USER_B_EMAIL}');
+WHERE (id = '${USER_A_ID}' AND email = '${TEST_USER_A_EMAIL}')
+   OR (id = '${USER_B_ID}' AND email = '${TEST_USER_B_EMAIL}');
 "
 
-echo "Staging preflight test data cleaned up cleanly via cascade."
+echo "Staging preflight test data cleaned up cleanly for exact verified accounts."
 ```
 
 ---
@@ -402,10 +482,10 @@ echo "Staging preflight test data cleaned up cleanly via cascade."
 | :--- | :--- | :--- |
 | **Target Check** | `MIGRATION_DATABASE_URL` contains port 6543 or non-staging ref | **ABORT**. Do not connect. |
 | **Session Role** | `current_user` is not privileged role | **ABORT**. Re-authenticate as `postgres`. |
-| **Backup** | `pg_dump` exits with non-zero status | **ABORT**. Do not run migrations without a backup. |
-| **Migration 00001** | `psql` fails with trigger error on `auth.users` | **HALT**. Role lacks permissions on `auth` schema. Grant `TRIGGER` or apply via Supabase Dashboard. |
-| **Trigger Gate** | `on_auth_user_created` missing or disabled | **HALT**. Do not proceed to `00002`. Investigate trigger setup. |
-| **Migrations 00002–00009** | Any file throws error | **HALT**. File rolled back automatically. Diagnose and resume forward. |
-| **Functional Signup** | Profile row not created in `public.profiles` | **HALT**. Supabase GoTrue trigger hook is not firing. |
+| **Backup** | `pg_dump` fails, file missing/empty, or `pg_restore --list` fails | **ABORT**. Do not run migrations without a validated backup. |
+| **Migration 00001** | `psql` fails with trigger error on `auth.users` | **HALT**. Role lacks permissions on `auth` schema. Do NOT bypass; escalate to Supabase Project Owner. |
+| **Trigger Gate** | `on_auth_user_created` missing or disabled in catalog | **HALT**. Do not proceed to `00002`. Investigate trigger setup with Project Owner. |
+| **Migrations 00002–00009** | Any file throws error | **HALT**. File rolled back automatically via `--single-transaction`. Diagnose and resume forward. |
+| **Functional Signup** | Profile row not created in `public.profiles` | **HALT**. GoTrue trigger hook is not firing despite catalog entry. |
 | **Tenant Isolation** | Tenant B receives `200` accessing Tenant A's event | **CRITICAL SECURITY ALERT**. RLS policy is non-functional. Disable traffic. |
-
+| **Cleanup** | Exact user IDs not recorded or mismatch | **HALT**. Do not run broad deletion queries. Clean via Supabase Dashboard. |

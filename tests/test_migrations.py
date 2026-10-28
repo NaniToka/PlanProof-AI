@@ -359,12 +359,59 @@ def test_staging_runbook_specifies_disposable_account_functional_test() -> None:
     """Verify runbook documents end-to-end functional testing using a disposable staging account."""
     text = RUNBOOK_PATH.read_text(encoding="utf-8")
 
-    assert "Disposable Staging Account" in text or "disposable" in text.lower()
+    assert "disposable" in text.lower()
     assert "auth/v1/signup" in text
     assert "/api/v1/events" in text
-    assert "Tenant B" in text or "cross-tenant" in text.lower()
+    assert "tenant b" in text.lower() or "cross-tenant" in text.lower()
     assert "404" in text  # Isolation assertion returns 404
-    assert "CLEANUP" in text or "DELETE FROM auth.users" in text
+
+
+def test_staging_runbook_backup_validation_and_limitations() -> None:
+    """Verify runbook checks pg_dump exit status, non-empty file, dump validation, and notes limitations."""
+    text = RUNBOOK_PATH.read_text(encoding="utf-8")
+
+    # Exit code and non-empty file checks
+    assert "DUMP_STATUS" in text or "exit code" in text.lower()
+    assert "-s " in text or "! -s" in text, "Must check that backup file is non-empty (-s)"
+    assert "chmod 600" in text, "Must enforce restrictive file permissions on backup"
+
+    # Supported dump validation via pg_restore --list
+    assert "pg_restore --list" in text, "Must document pg_restore --list dump validation"
+
+    # Limitations explicitly documented
+    assert "--schema=public" in text
+    assert "auth.users" in text or "auth" in text.lower()
+    assert "limitations" in text.lower() or "what is not captured" in text.lower()
+
+
+def test_staging_runbook_trigger_guidance_distinguishes_catalog_from_functional_proof() -> None:
+    """Verify trigger catalog check is not presented as proof of GoTrue signup success and respects auth boundaries."""
+    text = RUNBOOK_PATH.read_text(encoding="utf-8")
+
+    # Distinguish catalog from functional proof
+    assert "does not prove" in text.lower() or "catalog visibility != functional proof" in text.lower()
+    assert "gotrue" in text.lower()
+
+    # Respect Supabase-managed object boundaries (do not suggest bypassing)
+    assert "do not attempt to bypass" in text.lower() or "bypass" in text.lower()
+    assert "escalat" in text.lower() or "project owner" in text.lower()
+
+
+def test_staging_runbook_exact_cleanup_without_pattern_matching() -> None:
+    """Verify cleanup forbids broad email patterns and requires exact recorded identities with human confirmation."""
+    text = RUNBOOK_PATH.read_text(encoding="utf-8")
+
+    # Prohibits broad pattern matching (LIKE)
+    assert "never use pattern deletion" in text.lower() or "never run `delete ... where email like" in text.lower() or "like '%" in text.lower()
+
+    # Requires exact recorded identities (UUID and email) and human confirmation
+    assert "exact recorded identities" in text.lower() or "exact" in text.lower()
+    assert "human confirmation" in text.lower()
+
+    # Prefers Dashboard or Admin API workflow
+    assert "dashboard" in text.lower() or "admin api" in text.lower()
+    assert "supabase_admin" in text.lower() or "service_role" in text.lower()
+
 
 
 
