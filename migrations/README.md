@@ -2,6 +2,8 @@
 
 This directory contains versioned PostgreSQL migrations and Row Level Security (RLS) policies for PlanProof AI's persistent data layer on Supabase.
 
+For staging execution, operator preflight procedures, and end-to-end verification workflows, see the dedicated [Staging Preflight Runbook](../docs/STAGING_PREFLIGHT_RUNBOOK.md).
+
 ---
 
 ## 1. Migration Ordering

@@ -296,4 +296,76 @@ def test_postgres_repository_profile_fallback_documented() -> None:
     assert "on_auth_user_created" in repo_text
 
 
+# ==============================================================================
+# Runbook Documentation Regression Tests (Static Documentation Checks)
+# ==============================================================================
+
+RUNBOOK_PATH = Path(__file__).parent.parent / "docs" / "STAGING_PREFLIGHT_RUNBOOK.md"
+
+
+def test_staging_runbook_exists_and_prohibits_unauthorized_execution() -> None:
+    """Verify docs/STAGING_PREFLIGHT_RUNBOOK.md exists and strictly forbids unauthorized/autonomous execution."""
+    assert RUNBOOK_PATH.exists() and RUNBOOK_PATH.is_file(), "STAGING_PREFLIGHT_RUNBOOK.md must exist in docs/"
+    text = RUNBOOK_PATH.read_text(encoding="utf-8")
+
+    assert "Zero Automatic Execution" in text or "no automated script" in text.lower()
+    assert "Human Authorization Required" in text or "explicit, written approval" in text.lower()
+    assert "Never Execute Against Production" in text or "never production" in text.lower()
+
+
+def test_staging_runbook_specifies_identity_check_and_secret_safety() -> None:
+    """Verify runbook enforces a dedicated staging project identity check and secret-safe execution."""
+    text = RUNBOOK_PATH.read_text(encoding="utf-8")
+
+    # Staging project check independent of port
+    assert "STAGING_PROJECT_REF" in text
+    assert "MIGRATION_DATABASE_URL" in text
+    assert "current_database()" in text or "session_role" in text
+
+    # Secret-safe checks (no hardcoded passwords or printing secrets)
+    assert "<staging-project-ref>" in text
+    assert "<staging-db-password>" in text
+    assert "leaking" in text.lower() or "secret-safe" in text.lower()
+
+
+def test_staging_runbook_mandates_transaction_safety_and_stop_conditions() -> None:
+    """Verify runbook mandates per-file transactions, ON_ERROR_STOP, and clear stop conditions."""
+    text = RUNBOOK_PATH.read_text(encoding="utf-8")
+
+    assert "--single-transaction" in text
+    assert "-v ON_ERROR_STOP=1" in text
+    assert "STOP CONDITION" in text or "Stop Condition" in text
+    assert "Non-Destructive" in text or "non-destructive" in text.lower()
+
+
+def test_staging_runbook_includes_post_00001_and_final_verifications() -> None:
+    """Verify runbook documents post-00001 trigger checks and final catalog/RLS/grant checks."""
+    text = RUNBOOK_PATH.read_text(encoding="utf-8")
+
+    # Intermediate post-00001 trigger check
+    assert "on_auth_user_created" in text
+    assert "handle_new_user" in text
+    assert "SECURITY DEFINER" in text or "is_security_definer" in text
+    assert "tgenabled" in text
+
+    # Final post-migration verifications
+    assert "rowsecurity" in text
+    assert "pg_policies" in text
+    assert "has_table_privilege" in text
+    assert "27 policies" in text or "Total: 27" in text
+
+
+def test_staging_runbook_specifies_disposable_account_functional_test() -> None:
+    """Verify runbook documents end-to-end functional testing using a disposable staging account."""
+    text = RUNBOOK_PATH.read_text(encoding="utf-8")
+
+    assert "Disposable Staging Account" in text or "disposable" in text.lower()
+    assert "auth/v1/signup" in text
+    assert "/api/v1/events" in text
+    assert "Tenant B" in text or "cross-tenant" in text.lower()
+    assert "404" in text  # Isolation assertion returns 404
+    assert "CLEANUP" in text or "DELETE FROM auth.users" in text
+
+
+
 
