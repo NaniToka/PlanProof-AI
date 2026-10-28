@@ -187,7 +187,23 @@ class PostgresEventRepository(BaseEventRepository):
                 async with conn.transaction():
                     await self._set_rls_context(conn, owner_id)
 
-                    # 0. Ensure user profile exists (authenticated application operation)
+                    # 0. Ensure user profile exists (defensive fallback for referential integrity)
+                    # PURPOSE & RATIONALE:
+                    # In Supabase, the public.handle_new_user() trigger on auth.users automatically
+                    # provisions public.profiles rows upon registration. However, if a user account
+                    # was created prior to trigger installation, in isolated integration test fixtures,
+                    # or if the trigger experienced an asynchronous propagation delay, an attempt to
+                    # insert into public.events would violate FK 'events_user_id_fkey'.
+                    # Under RLS policy 'profiles_insert_own', authenticated users can insert their own
+                    # profile row (auth.uid() = id).
+                    #
+                    # KNOWN LIMITATIONS:
+                    # - Inserts an empty string ('') for email because transaction claims only provide
+                    #   the user UUID (request.jwt.claim.sub), not the GoTrue account email.
+                    # - Leaves full_name as NULL.
+                    # - Does not synchronize future auth.users metadata changes.
+                    # - This is a safety-net fallback and NOT a substitute for the canonical
+                    #   on_auth_user_created trigger on auth.users.
                     await conn.execute(
                         """
                         INSERT INTO public.profiles (id, email)

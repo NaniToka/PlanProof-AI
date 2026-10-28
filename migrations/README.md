@@ -20,8 +20,17 @@ Migrations are numbered sequentially and must be applied in the following depend
 | **08** | [`00008_enable_row_level_security.sql`](./00008_enable_row_level_security.sql) | Enable RLS and multi-tenant isolation policies | All 7 tables |
 | **09** | [`00009_grant_authenticated_role_permissions.sql`](./00009_grant_authenticated_role_permissions.sql) | Grant authenticated role schema and table permissions | `public` schema |
 
-### Rollback / Down Migrations
-Symmetrical reversal scripts are located in [`migrations/down/`](./down/) and must be executed in reverse order (`00009` down to `00001`).
+### Rollback / Down Migrations (Disposable Test Environments Only)
+Symmetrical reversal scripts are located in [`migrations/down/`](./down/) and **must strictly be executed in reverse order (`00009` down to `00001`)**:
+1. [`00009_revoke_authenticated_role_permissions.sql`](./down/00009_revoke_authenticated_role_permissions.sql)
+2. [`00008_disable_row_level_security.sql`](./down/00008_disable_row_level_security.sql)
+3. [`00007_drop_crisis_recovery_actions.sql`](./down/00007_drop_crisis_recovery_actions.sql)
+4. [`00006_drop_crisis_recovery_records.sql`](./down/00006_drop_crisis_recovery_records.sql)
+5. [`00005_drop_event_vendor_checklist_items.sql`](./down/00005_drop_event_vendor_checklist_items.sql)
+6. [`00004_drop_event_milestone_statuses.sql`](./down/00004_drop_event_milestone_statuses.sql)
+7. [`00003_drop_event_budgets.sql`](./down/00003_drop_event_budgets.sql)
+8. [`00002_drop_events.sql`](./down/00002_drop_events.sql)
+9. [`00001_drop_profiles.sql`](./down/00001_drop_profiles.sql)
 
 ---
 
@@ -29,6 +38,8 @@ Symmetrical reversal scripts are located in [`migrations/down/`](./down/) and mu
 
 PlanProof AI migrations are designed for **Supabase PostgreSQL 15+** with GoTrue authentication:
 - **Supabase Auth Integration**: Application tables reference `auth.users(id)` with cascade deletion. No fake or stub `auth.users` table exists in application migrations.
+- **Fail-Closed Profile Trigger**: Migration `00001` installs `on_auth_user_created` on `auth.users`. This requires privileged execution (`postgres` / `supabase_admin`). If the executing role lacks required privileges on `auth.users`, migration `00001` **fails closed** with an explicit error rather than silently swallowing the failure.
+- **Repository Profile Fallback**: `PostgresEventRepository.create()` includes a defensive fallback insert into `public.profiles` (`INSERT INTO public.profiles ... ON CONFLICT DO NOTHING`) to prevent foreign-key crashes if a user was created in an un-triggered test harness. *Limitation*: This fallback inserts an empty string for `email` and NULL for `full_name` because transaction claims only provide the user UUID. It is a safety-net and not a substitute for the canonical `on_auth_user_created` trigger.
 - **Supabase Built-in Identity**: RLS policies evaluate tenant identity using `auth.uid()`, which is natively provided and maintained by Supabase Auth in the `auth` schema.
 - **Application Database Connection Role**:
   - The runtime connection role (e.g. `planproof_app` or `planproof_test_app`) **must NOT** have `BYPASSRLS` or superuser privileges.
@@ -59,16 +70,19 @@ supabase db push
 # Export direct/session connection URL (Port 5432 - NEVER use transaction pooler 6543 for DDL)
 export MIGRATION_DATABASE_URL="postgresql://postgres.<project-ref>:<db-password>@<direct-host-or-session-pooler>:5432/postgres"
 
-# Apply sequentially (00001 through 00009)
-for file in migrations/000*.sql; do
-    echo "Applying $file..."
-    psql "$MIGRATION_DATABASE_URL" -v ON_ERROR_STOP=1 -f "$file"
+# Apply sequentially (00001 through 00009) in strict forward order with per-file transaction safety
+for file in $(ls migrations/000*.sql | sort); do
+    echo "Applying $file with transaction safety..."
+    psql "$MIGRATION_DATABASE_URL" -v ON_ERROR_STOP=1 --single-transaction -f "$file"
 done
 ```
 
+> [!NOTE]
+> **Per-File Transaction Safety (`--single-transaction`)**
+> Each migration file is executed inside its own transaction boundary via `--single-transaction` (`psql -1`). If a statement inside a file fails, that entire file rolls back cleanly and `-v ON_ERROR_STOP=1` immediately halts the loop. Note that migrations do **not** run as a single global transaction across files: any migration files that completed before the failure remain committed and applied.
+
 ### Option C: Using Supabase Dashboard SQL Editor
 Copy and paste the contents of files `00001` through `00009` sequentially into the SQL Editor in your Supabase project dashboard and click **Run**.
-
 
 ---
 
@@ -129,17 +143,63 @@ WHERE tc.constraint_type = 'FOREIGN KEY'
 ORDER BY tc.table_name;
 ```
 
+### 4.5 Verify Profile Provisioning Trigger and Function
+```sql
+-- 1. Verify public.handle_new_user function exists, is SECURITY DEFINER, and enforces search_path
+SELECT
+    p.proname,
+    p.prosecdef AS is_security_definer,
+    p.proconfig AS search_path_config
+FROM pg_proc p
+JOIN pg_namespace n ON p.pronamespace = n.oid
+WHERE n.nspname = 'public' AND p.proname = 'handle_new_user';
+-- Expected: prosecdef = true, search_path_config = '{search_path=public}'
+
+-- 2. Verify on_auth_user_created trigger exists on auth.users and is enabled
+SELECT
+    t.tgname AS trigger_name,
+    t.tgenabled AS trigger_status,
+    c.relname AS table_name,
+    n.nspname AS schema_name
+FROM pg_trigger t
+JOIN pg_class c ON t.tgrelid = c.oid
+JOIN pg_namespace n ON c.relnamespace = n.oid
+WHERE n.nspname = 'auth'
+  AND c.relname = 'users'
+  AND t.tgname = 'on_auth_user_created';
+-- Expected: 1 row returned, trigger_name = 'on_auth_user_created', trigger_status = 'O' (Enabled)
+```
+
 ---
 
 ## 5. Rollback and Recovery
 
-If a migration fails or must be rolled back:
+> [!CAUTION]
+> **Destructive Data Loss Warning**:
+> The rollback scripts in [`migrations/down/`](./down/) contain destructive `DROP TABLE ... CASCADE` statements. Executing down migrations will **permanently delete** all existing user accounts, events, budgets, checklist items, and crisis recovery records.
+> - **NEVER run down migrations on staging or production databases to recover from a failed migration.**
+> - For deployed databases, **always fix forward** by addressing the root cause or applying a forward corrective migration (`00010_...`).
+> - Destructive rollback procedures require a verified database backup and explicit human authorization.
+
+### Safe Partial-Failure Recovery Protocol (Staging & Production)
+
+If a migration fails mid-sequence (e.g., at file `00004`):
+1. **Stop Immediately**: Do not run rollback scripts or blindly re-execute the entire migration directory.
+2. **Inspect Current State**: Run verification queries in Section 4 to determine which migration files completed successfully.
+3. **Diagnose the Failure**: Review the error log from the failed migration file. Because `--single-transaction` was used, the failed file was completely rolled back, leaving the database at the clean boundary of the previous successful migration.
+4. **Resolve the Underlying Cause**: Fix permissions, resolve locks, or adjust environment settings.
+5. **Resume Forward Migration**: Re-run migrations starting strictly from the failed migration file through `00009`.
+
+### Disposable / Test Database Teardown Only
+
+If tearing down a disposable local test database where data loss is expected and acceptable, down migrations must be executed in **strict reverse order** (`00009` down to `00001`) to respect foreign-key dependencies:
 
 ```bash
-# Use direct/session connection (port 5432) for rollback DDL
-for file in migrations/down/000*.sql; do
-    echo "Reverting $file..."
-    psql "$MIGRATION_DATABASE_URL" -v ON_ERROR_STOP=1 -f "$file"
+# DISPOSABLE TEST DATABASES ONLY - NEVER RUN IN PRODUCTION
+# Execute strictly in reverse order (00009 down to 00001)
+for file in $(ls -r migrations/down/000*.sql); do
+    echo "Reverting $file with transaction safety..."
+    psql "$MIGRATION_DATABASE_URL" -v ON_ERROR_STOP=1 --single-transaction -f "$file"
 done
 ```
 

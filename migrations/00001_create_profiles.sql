@@ -53,17 +53,26 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
--- Attach user creation trigger to auth.users if table is present and permitted
+-- Attach user creation trigger to auth.users if table is present
 DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'auth' AND tablename = 'users') THEN
-        DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
-        CREATE TRIGGER on_auth_user_created
-            AFTER INSERT ON auth.users
-            FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
+        BEGIN
+            DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
+            CREATE TRIGGER on_auth_user_created
+                AFTER INSERT ON auth.users
+                FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
+        EXCEPTION WHEN OTHERS THEN
+            RAISE EXCEPTION
+                'Failed to install required profile trigger "on_auth_user_created" on auth.users: % (SQLSTATE: %). '
+                'The executing migration role lacks required permissions on auth.users. '
+                'Ensure migrations are run under a privileged role (e.g., postgres / supabase_admin) via direct session port 5432, '
+                'or an appropriately privileged operator must manually install and verify this trigger.',
+                SQLERRM, SQLSTATE;
+        END;
+    ELSE
+        RAISE NOTICE 'Table auth.users does not exist in schema auth; skipping on_auth_user_created trigger attachment.';
     END IF;
-EXCEPTION WHEN OTHERS THEN
-    RAISE NOTICE 'Skipping auth.users trigger setup due to permissions: %', SQLERRM;
 END $$;
 
 COMMENT ON TABLE public.profiles IS 'User profiles linked to Supabase auth.users holding non-sensitive account details.';

@@ -226,3 +226,74 @@ def test_migration_documentation_separates_ddl_port_5432_from_pooler_port_6543()
     )
 
 
+def test_profile_trigger_fails_closed_without_swallowing_errors() -> None:
+    """Verify 00001_create_profiles.sql fails closed with RAISE EXCEPTION rather than swallowing errors."""
+    sql = (MIGRATIONS_DIR / "00001_create_profiles.sql").read_text(encoding="utf-8")
+
+    # Must NOT swallow error as a notice
+    assert "Skipping auth.users trigger setup due to permissions" not in sql, (
+        "Migration 00001 must not swallow trigger creation errors with a silent notice"
+    )
+
+    # Must fail closed with RAISE EXCEPTION when trigger creation fails on auth.users
+    assert "RAISE EXCEPTION" in sql, (
+        "Migration 00001 must raise an explicit exception if trigger creation fails on auth.users"
+    )
+    assert "on_auth_user_created" in sql
+    assert "handle_new_user" in sql
+
+
+def test_no_ascending_rollback_in_documentation() -> None:
+    """Verify migrations/README.md does not document an unsafe ascending rollback loop."""
+    readme_text = (MIGRATIONS_DIR / "README.md").read_text(encoding="utf-8")
+
+    # Ascending shell glob for file in migrations/down/000*.sql without reversal is forbidden
+    assert "for file in migrations/down/000*.sql; do" not in readme_text, (
+        "README.md must not instruct executing down migrations via an ascending shell glob"
+    )
+
+    # Down migrations must be documented in reverse order (00009 down to 00001)
+    assert "00009 down to 00001" in readme_text or "ls -r migrations/down" in readme_text, (
+        "README.md must instruct executing down migrations in reverse dependency order"
+    )
+
+
+def test_rollback_documentation_warns_of_destructive_data_loss() -> None:
+    """Verify migrations/README.md explicitly warns against running down scripts in staging/production."""
+    readme_text = (MIGRATIONS_DIR / "README.md").read_text(encoding="utf-8")
+
+    assert "DROP TABLE ... CASCADE" in readme_text or "DROP TABLE" in readme_text
+    assert "permanently delete" in readme_text.lower() or "data loss" in readme_text.lower()
+    assert "fix forward" in readme_text.lower()
+    assert "NEVER run down migrations on staging or production" in readme_text
+
+
+def test_migration_documentation_uses_single_transaction_and_error_stop() -> None:
+    """Verify migrations/README.md enforces --single-transaction and -v ON_ERROR_STOP=1."""
+    readme_text = (MIGRATIONS_DIR / "README.md").read_text(encoding="utf-8")
+
+    assert "--single-transaction" in readme_text
+    assert "-v ON_ERROR_STOP=1" in readme_text
+
+
+def test_trigger_verification_catalog_query_in_documentation() -> None:
+    """Verify migrations/README.md documents the catalog query for on_auth_user_created trigger on auth.users."""
+    readme_text = (MIGRATIONS_DIR / "README.md").read_text(encoding="utf-8")
+
+    assert "pg_trigger" in readme_text
+    assert "on_auth_user_created" in readme_text
+    assert "tgenabled" in readme_text
+    assert "auth.users" in readme_text
+
+
+def test_postgres_repository_profile_fallback_documented() -> None:
+    """Verify PostgresEventRepository documents the purpose and limitations of the profile fallback."""
+    repo_file = Path(__file__).parent.parent / "app" / "repositories" / "postgres.py"
+    repo_text = repo_file.read_text(encoding="utf-8")
+
+    assert "defensive fallback" in repo_text.lower()
+    assert "empty string" in repo_text.lower()
+    assert "on_auth_user_created" in repo_text
+
+
+
