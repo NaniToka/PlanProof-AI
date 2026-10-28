@@ -347,13 +347,19 @@ class Settings(BaseSettings):
     )
     @classmethod
     def empty_string_to_none(cls, value: Any) -> Any:
-        """Convert empty or whitespace-only strings and default template placeholders to None for optional credentials."""
+        """Convert empty strings, whitespace, and template placeholders to None for optional credentials."""
         if isinstance(value, str):
             val = value.strip()
+            if not val:
+                return None
+            val_lower = val.lower()
             if (
-                not val
-                or val in ("your_gemini_api_key_here", "your-gemini-api-key")
+                val_lower in ("your_gemini_api_key_here", "your-gemini-api-key")
                 or (val.startswith("<") and val.endswith(">"))
+                or val_lower.startswith("your-")
+                or val_lower.startswith("your_")
+                or "your-project-ref" in val_lower
+                or "your-db-password" in val_lower
             ):
                 return None
         return value

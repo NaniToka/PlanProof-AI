@@ -359,3 +359,103 @@ def test_trusted_proxies_validation() -> None:
         Settings(trusted_proxies=["invalid host name!"])
 
 
+def test_placeholder_values_converted_to_none() -> None:
+    """Verify that template placeholder values from .env.example are treated as unconfigured (None)."""
+    settings = Settings(
+        gemini_api_key="your_gemini_api_key_here",
+        supabase_url="https://your-project-ref.supabase.co",
+        supabase_anon_key="your-supabase-anon-key-here",
+        supabase_jwt_secret="your-supabase-jwt-secret-here",
+        guest_session_secret="your-32-character-minimum-guest-secret-here!",
+        database_url="postgresql://postgres.your-project-ref:your-db-password@aws-0-ap-south-1.pooler.supabase.com:6543/postgres",
+    )
+    assert settings.gemini_api_key is None
+    assert settings.get_gemini_api_key_value() is None
+    assert settings.supabase_url is None
+    assert settings.supabase_anon_key is None
+    assert settings.supabase_jwt_secret is None
+    assert settings.guest_session_secret is None
+    assert settings.database_url is None
+    assert settings.is_supabase_configured is False
+    assert settings.is_database_configured is False
+
+    # Also test angle-bracket placeholders
+    s_bracket = Settings(
+        gemini_api_key="<gemini-api-key>",
+        supabase_url="<staging-project-url>",
+        supabase_anon_key="<staging-anon-key>",
+        database_url="<staging-database-url>",
+    )
+    assert s_bracket.gemini_api_key is None
+    assert s_bracket.supabase_url is None
+    assert s_bracket.supabase_anon_key is None
+    assert s_bracket.database_url is None
+
+
+def test_empty_and_whitespace_values_converted_to_none() -> None:
+    """Verify that empty strings or whitespace-only inputs evaluate to None for credential fields."""
+    settings = Settings(
+        gemini_api_key="",
+        supabase_url="   ",
+        supabase_anon_key="\t",
+        supabase_jwt_secret="  \n  ",
+        database_url="",
+    )
+    assert settings.gemini_api_key is None
+    assert settings.supabase_url is None
+    assert settings.supabase_anon_key is None
+    assert settings.supabase_jwt_secret is None
+    assert settings.database_url is None
+
+
+def test_legitimate_non_placeholder_values_preserved_and_secrets_masked(caplog: pytest.LogCaptureFixture) -> None:
+    """Verify that legitimate keys/URLs are preserved and sensitive secrets are masked in logging and repr."""
+    import logging
+
+    legit_key = "AIzaSyA1B2C3D4E5RealKeyExample999"
+    legit_url = "https://abcdefghijklm.supabase.co"
+    legit_anon = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.legit-token"
+    legit_secret = "real-jwt-secret-value-abcdef123456"
+    legit_db = "postgresql://postgres.abcdefghijklm:MySecretPass123!@aws-0-ap-south-1.pooler.supabase.com:6543/postgres"
+
+    settings = Settings(
+        gemini_api_key=legit_key,
+        supabase_url=legit_url,
+        supabase_anon_key=legit_anon,
+        supabase_jwt_secret=legit_secret,
+        database_url=legit_db,
+    )
+
+    # Legitimate values are preserved
+    assert settings.get_gemini_api_key_value() == legit_key
+    assert settings.supabase_url == legit_url
+    assert settings.get_supabase_anon_key_value() == legit_anon
+    assert settings.get_supabase_jwt_secret_value() == legit_secret
+    assert settings.get_database_url_value() == legit_db
+    assert settings.is_supabase_configured is True
+    assert settings.is_database_configured is True
+
+    # Check repr and str masking
+    repr_text = repr(settings)
+    str_text = str(settings)
+
+    assert legit_key not in repr_text
+    assert legit_key not in str_text
+    assert "MySecretPass123!" not in repr_text
+    assert "MySecretPass123!" not in str_text
+    assert legit_secret not in repr_text
+    assert legit_secret not in str_text
+
+    # Verify logging settings object does not leak secrets
+    logger = logging.getLogger("planproof_test_logger")
+    with caplog.at_level(logging.DEBUG):
+        logger.info("Current settings configuration: %s", settings)
+        logger.info("Database URL configuration: %s", repr(settings.database_url))
+
+    log_output = caplog.text
+    assert legit_key not in log_output
+    assert "MySecretPass123!" not in log_output
+    assert legit_secret not in log_output
+
+
+
