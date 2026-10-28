@@ -347,9 +347,15 @@ class Settings(BaseSettings):
     )
     @classmethod
     def empty_string_to_none(cls, value: Any) -> Any:
-        """Convert empty or whitespace-only strings to None for optional credentials."""
-        if isinstance(value, str) and not value.strip():
-            return None
+        """Convert empty or whitespace-only strings and default template placeholders to None for optional credentials."""
+        if isinstance(value, str):
+            val = value.strip()
+            if (
+                not val
+                or val in ("your_gemini_api_key_here", "your-gemini-api-key")
+                or (val.startswith("<") and val.endswith(">"))
+            ):
+                return None
         return value
 
     @field_validator("supabase_jwt_algorithms", mode="before")

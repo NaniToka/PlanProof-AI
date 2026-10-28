@@ -468,68 +468,67 @@ fi
 
 > [!CAUTION]
 > **EXACT DISPOSABLE-ACCOUNT CLEANUP PROTOCOL**:
-> - **Never Use Pattern Deletion**: Never run `DELETE ... WHERE email LIKE '%...'` or delete users by domain/prefix match. Broad queries risk deleting other staging testers or pre-existing QA accounts.
+> - **Supported Auth Interfaces Only**: Use the official Supabase Dashboard or the supported Supabase Auth Admin API. Direct SQL deletion from `auth.users` is prohibited in normal staging cleanup procedures.
 > - **Exact Recorded Identities Only**: Deletion must target **only** the exact UUIDs (`USER_A_ID`, `USER_B_ID`) and exact emails (`TEST_USER_A_EMAIL`, `TEST_USER_B_EMAIL`) explicitly recorded in Step 6.2.
-> - **Human Confirmation Required**: Verify the exact identities and confirm deletion before proceeding.
-> - **Never Run by Automated Tasks**: Cleanup must never be executed automatically by local agents or test runners.
+> - **Never Use Pattern Deletion**: Never run broad deletion queries (e.g. `WHERE email LIKE '%...'` or domain matching). Broad pattern matching risks deleting other staging testers or pre-existing QA accounts.
+> - **Human Confirmation Required**: The operator must visually verify the recorded UUIDs and associated emails and obtain operator confirmation before proceeding.
+> - **Never Run by Automated Tasks**: Cleanup must never be executed automatically by local agents, background jobs, or CI/CD pipelines.
 
-### Option A: Supabase Auth Administrative Workflow (Strongly Recommended)
-The supported and safest method to remove disposable test accounts is through the official Supabase Auth management interfaces. This ensures that Supabase GoTrue cleans up its internal auth tables (identities, sessions, refresh tokens, MFA factors, audit logs) properly:
-1. Open the Supabase Dashboard for the Staging project.
-2. Navigate to **Authentication** $\rightarrow$ **Users**.
-3. Search for the exact recorded User UUID (`USER_A_ID`, then `USER_B_ID`).
-4. Verify the email matches `TEST_USER_A_EMAIL` and `TEST_USER_B_EMAIL`.
-5. Click **Delete User** for each account. GoTrue handles deletion and cascades to `public.profiles`, `public.events`, and child records.
-
-Alternatively, using the official Supabase Admin API (`supabase.auth.admin.deleteUser`) via a secure administrative script:
-```bash
-# Example using Supabase Service-Role Admin API via HTTP DELETE
-# (The service_role key provides administrative HTTP API access to GoTrue admin endpoints)
-# curl -X DELETE "${STAGING_SUPABASE_URL}/auth/v1/admin/users/${USER_A_ID}" \
-#      -H "apikey: ${SUPABASE_SERVICE_ROLE_KEY}" \
-#      -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}"
-```
-
-### Option B: Exceptional Direct SQL Fallback (Requires Project Owner Approval)
-Direct SQL deletion from `auth.users` is an exceptional fallback. It is subject to strict constraints:
-- **Privilege & Environment Warning**:
-  - `service_role` is an API role for PostgREST / GoTrue, **not** a PostgreSQL superuser, and does not automatically authorize direct SQL deletion from `auth.users`.
-  - In Supabase, `auth.users` is owned by `supabase_admin`. Whether a migration or maintenance role (such as `postgres`) possesses `DELETE` privileges on `auth.users` is environment-dependent and varies across Supabase configurations.
-  - Direct SQL deletion on `auth.users` must never be run without explicit approval and guidance from the **Supabase Project Owner**.
-- **Verified Referential Cascade Chain**:
-  Based on actual repository migration foreign-key constraints:
-  1. `public.profiles.id` directly references `auth.users(id) ON DELETE CASCADE` (Migration `00001`).
-  2. `public.events.user_id` directly references `public.profiles(id) ON DELETE CASCADE` (Migration `00002`).
-  3. The remaining five application tables reference `public.events(event_id) ON DELETE CASCADE`:
+### 7.1 Why Direct SQL Deletion from `auth.users` is Excluded
+1. **Managed Service Boundary**: In Supabase, the `auth` schema and `auth.users` table are owned and managed by GoTrue (`supabase_admin`). Direct database manipulation bypasses GoTrue auth lifecycle hooks (such as sessions, identities, refresh tokens, MFA factors, and audit logs), which can leave orphaned internal authentication state.
+2. **Role Privilege Accuracy**: The `service_role` is an HTTP API role used with secret API keys for PostgREST and GoTrue administrative endpoints. It is **not** a PostgreSQL superuser and does not authorize direct SQL modifications on `auth.users`.
+3. **Cascading Teardown**: When a user is deleted through the supported Auth management interface (Dashboard or Admin API), PostgreSQL enforces foreign-key constraints defined in PlanProof migrations:
+   - `public.profiles(id)` directly references `auth.users(id) ON DELETE CASCADE` (Migration `00001`).
+   - `public.events(user_id)` directly references `public.profiles(id) ON DELETE CASCADE` (Migration `00002`).
+   - All five event child tables reference `public.events(event_id) ON DELETE CASCADE`:
      - `public.event_budgets` (Migration `00003`)
      - `public.event_milestone_statuses` (Migration `00004`)
      - `public.event_vendor_checklist_items` (Migration `00005`)
      - `public.crisis_recovery_records` (Migration `00006`)
      - `public.crisis_recovery_actions` (Migration `00007`, also referencing `crisis_recovery_records ON DELETE CASCADE`)
-  Deleting an `auth.users` row cascades through `profiles` $\rightarrow$ `events` $\rightarrow$ child records.
+   Thus, deleting the user via GoTrue cleanly cascades through `profiles` $\rightarrow$ `events` $\rightarrow$ all child records.
 
-#### Step 1: Pre-Deletion Read-Only Identity Verification
-Before any deletion is issued, query `auth.users` to verify the exact records:
-```bash
-psql "$MIGRATION_DATABASE_URL" -v ON_ERROR_STOP=1 -c "
-SELECT id, email, created_at 
-FROM auth.users 
-WHERE id IN ('${USER_A_ID}', '${USER_B_ID}');
-"
-```
-*Verification Gate:* The operator must visually inspect the output and verify that **exactly 2 rows** are returned, and their emails exactly match `${TEST_USER_A_EMAIL}` and `${TEST_USER_B_EMAIL}`. If 0 rows or unexpected rows appear, **STOP**.
+---
 
-#### Step 2: Exact Direct SQL Deletion (Only After Verification & Project Owner Approval)
-```bash
-# Verify both UUID and exact email match before deletion (exact match only)
-psql "$MIGRATION_DATABASE_URL" -v ON_ERROR_STOP=1 -c "
-DELETE FROM auth.users 
-WHERE (id = '${USER_A_ID}' AND email = '${TEST_USER_A_EMAIL}')
-   OR (id = '${USER_B_ID}' AND email = '${TEST_USER_B_EMAIL}');
-"
+### 7.2 Method 1: Supabase Dashboard (Recommended UI Workflow)
+The most transparent and safe operational method:
+1. Log in to the official **Supabase Dashboard** for the verified Staging project.
+2. Navigate to **Authentication** $\rightarrow$ **Users**.
+3. In the search box, search for the exact recorded User UUID (`USER_A_ID`).
+4. Visually confirm that the associated email matches `TEST_USER_A_EMAIL`.
+5. Click **Delete User** and confirm deletion.
+6. Repeat steps 3–5 for `USER_B_ID` and `TEST_USER_B_EMAIL`.
+7. Verify that both disposable accounts are removed from the user list.
 
-echo "Staging preflight test data cleaned up cleanly for exact verified accounts."
-```
+---
+
+### 7.3 Method 2: Supabase Auth Admin API (Supported API Workflow)
+If performing teardown programmatically via a release workstation:
+1. Verify that `USER_A_ID` and `USER_B_ID` are non-empty and match the exact recorded values.
+2. Obtain explicit operator confirmation before issuing the API calls:
+   ```bash
+   echo "Confirm deletion of verified disposable staging accounts:"
+   echo " - User A: ${USER_A_ID} (${TEST_USER_A_EMAIL})"
+   echo " - User B: ${USER_B_ID} (${TEST_USER_B_EMAIL})"
+   read -p "Proceed with deletion? (y/N): " CONFIRM
+   if [[ "$CONFIRM" != "y" && "$CONFIRM" != "Y" ]]; then
+       echo "Cleanup aborted by operator."
+       exit 0
+   fi
+   ```
+3. Issue administrative deletion requests using the Supabase Auth Admin endpoint (requires `SUPABASE_SERVICE_ROLE_KEY`):
+   ```bash
+   # Delete User A
+   curl -s -X DELETE "${STAGING_SUPABASE_URL}/auth/v1/admin/users/${USER_A_ID}" \
+        -H "apikey: ${SUPABASE_SERVICE_ROLE_KEY}" \
+        -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}"
+
+   # Delete User B
+   curl -s -X DELETE "${STAGING_SUPABASE_URL}/auth/v1/admin/users/${USER_B_ID}" \
+        -H "apikey: ${SUPABASE_SERVICE_ROLE_KEY}" \
+        -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}"
+   ```
+4. Verify HTTP 200 OK responses, confirming GoTrue has removed the users and triggered relational cascading.
 
 ---
 

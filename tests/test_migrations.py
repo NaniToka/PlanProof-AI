@@ -406,7 +406,7 @@ def test_staging_runbook_exact_cleanup_without_pattern_matching() -> None:
 
     # Requires exact recorded identities (UUID and email) and human confirmation
     assert "exact recorded identities" in text.lower() or "exact" in text.lower()
-    assert "human confirmation" in text.lower()
+    assert "confirmation" in text.lower() and ("human" in text.lower() or "operator" in text.lower())
 
     # Prefers Dashboard or Admin API workflow
     assert "dashboard" in text.lower() or "admin api" in text.lower()
@@ -442,21 +442,28 @@ def test_staging_runbook_backup_archive_listing_distinguished_from_restore_proof
 
 
 def test_staging_runbook_cleanup_privilege_and_cascade_accuracy() -> None:
-    """Verify cleanup instructions accurately represent roles, owner approval, and referential cascade chain."""
+    """Verify cleanup excludes direct SQL auth.users deletion, uses Dashboard/Admin API, and verifies cascade."""
     text = RUNBOOK_PATH.read_text(encoding="utf-8")
+
+    # Ensures direct SQL deletion from auth.users is removed from cleanup procedures
+    assert "DELETE FROM auth.users" not in text
+    assert "direct sql deletion from `auth.users` is prohibited" in text.lower() or "direct sql deletion" in text.lower()
 
     # Does not mischaracterize service_role as a superuser
     assert "service_role superuser" not in text.lower()
-    assert "project owner" in text.lower()
+
+    # Documents supported cleanup workflows: Dashboard and/or Auth Admin API
+    assert "dashboard" in text.lower()
+    assert "admin" in text.lower()
+
+    # Operator confirmation required before account deletion
+    assert "confirmation" in text.lower() or "confirm" in text.lower()
 
     # Accurately identifies cascade chain through profiles and events to child tables
     assert "public.profiles" in text
     assert "public.events" in text
     assert "public.event_budgets" in text
     assert "public.crisis_recovery_records" in text
-
-    # Pre-action inspection query before SQL deletion
-    assert "SELECT id, email" in text or "select id, email" in text.lower()
 
 
 
