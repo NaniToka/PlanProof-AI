@@ -43,13 +43,25 @@ export STAGING_SUPABASE_ANON_KEY="<staging-anon-key>"
 Verify that the target connection URL references the staging project without printing credentials to the console:
 
 ```bash
-# Assert connection string targets the intended staging project ref without leaking password
-if [[ "$MIGRATION_DATABASE_URL" != *"$STAGING_PROJECT_REF"* ]]; then
-    echo "ERROR: MIGRATION_DATABASE_URL does not match STAGING_PROJECT_REF ($STAGING_PROJECT_REF). Aborting!"
+# 1. Require explicit, non-empty staging project reference (cannot be blank or unreplaced placeholder)
+if [ -z "${STAGING_PROJECT_REF:-}" ] || [ "${STAGING_PROJECT_REF}" = "<staging-project-ref>" ]; then
+    echo "ERROR: STAGING_PROJECT_REF must be explicitly set to a valid non-empty staging project reference (cannot be empty or default placeholder). Aborting!"
     exit 1
 fi
 
-# Assert port 5432 is specified for DDL migrations (port 6543 pooler forbidden for DDL)
+# 2. Require explicit, non-empty database URL
+if [ -z "${MIGRATION_DATABASE_URL:-}" ] || [ "${MIGRATION_DATABASE_URL}" = "postgresql://postgres.<staging-project-ref>:<staging-db-password>@aws-0-<staging-region>.pooler.supabase.com:5432/postgres" ]; then
+    echo "ERROR: MIGRATION_DATABASE_URL must be explicitly set to a valid non-empty connection string. Aborting!"
+    exit 1
+fi
+
+# 3. Assert connection string targets the intended staging project ref without leaking password
+if [[ "$MIGRATION_DATABASE_URL" != *"$STAGING_PROJECT_REF"* ]]; then
+    echo "ERROR: MIGRATION_DATABASE_URL does not target the expected STAGING_PROJECT_REF ($STAGING_PROJECT_REF). Aborting!"
+    exit 1
+fi
+
+# 4. Assert port 5432 is specified for DDL migrations (port 6543 pooler forbidden for DDL)
 if [[ "$MIGRATION_DATABASE_URL" == *":6543/"* ]]; then
     echo "ERROR: MIGRATION_DATABASE_URL specifies port 6543 (transaction pooler). DDL requires session port 5432. Aborting!"
     exit 1
@@ -84,7 +96,8 @@ Staging databases frequently hold testing datasets, staging test profiles, or se
 > **Scope & Limitations of Logical Backup**:
 > The command below captures a logical dump of the `public` schema (`--schema=public`).
 > - **What is captured:** Application tables, views, sequences, types, and data in `public`.
-> - **What is NOT captured:** Managed Supabase Auth data (`auth.users`, identities, refresh tokens, MFA factors), Storage metadata (`storage.buckets`, `storage.objects`), Vault secrets, Edge functions, database extensions, or project configuration settings.
+> - **What is NOT captured:** Managed Supabase Auth data (`auth.users`, identities, refresh tokens, MFA factors), Storage metadata (`storage.buckets`, `storage.objects`), Vault secrets, Edge functions, database extensions, or project configuration settings. It is **not** a complete Supabase platform backup.
+> - **Archive Listing != Restore Proof:** Running `pg_restore --list` is a basic archive integrity check verifying that the custom-format header and Table of Contents (TOC) are readable. It does **not** prove that restoring the objects into the database will succeed (it does not execute SQL DDL/DML, test target schema conflicts, or verify foreign-key / trigger constraints during restore).
 > - **Recovery Assumption Warning:** A dump must never be assumed recoverable solely because the command exited without error. A valid restore plan must be approved before proceeding.
 
 ### 3.1 Execute Logical Backup
@@ -111,21 +124,35 @@ chmod 600 "$BACKUP_FILE"
 
 ### 3.2 Validate Backup Existence, Non-Empty Size, and Dump Integrity
 ```bash
-# 1. Assert backup file exists and is non-empty
-if [ ! -s "$BACKUP_FILE" ]; then
-    echo "ERROR: Backup file ${BACKUP_FILE} is missing or has zero bytes! Aborting migration."
+# 1. Assert single target backup file is explicitly identified without unquoted wildcards
+if [ -z "${BACKUP_FILE:-}" ]; then
+    echo "ERROR: BACKUP_FILE is unset or empty! Set BACKUP_FILE to the intended single backup file path."
     exit 1
 fi
 
-# 2. Validate dump archive table of contents via pg_restore
+# Disallow glob characters in BACKUP_FILE to prevent ambiguous multi-file checks
+if [[ "$BACKUP_FILE" == *"*"* ]] || [[ "$BACKUP_FILE" == *"?"* ]]; then
+    echo "ERROR: BACKUP_FILE must be an explicit filename without wildcards (* or ?). Aborting!"
+    exit 1
+fi
+
+# 2. Assert backup file exists as a regular file and is non-empty
+if [ ! -f "$BACKUP_FILE" ] || [ ! -s "$BACKUP_FILE" ]; then
+    echo "ERROR: Backup file ${BACKUP_FILE} does not exist or has zero bytes! Aborting migration."
+    exit 1
+fi
+
+# 3. Validate dump archive table of contents via pg_restore
+# NOTE: This validates that the custom archive header and TOC are readable.
+# It is a basic integrity check and does NOT prove that a database restore will succeed.
 pg_restore --list "$BACKUP_FILE" > /dev/null 2>&1
 RESTORE_CHECK_STATUS=$?
 if [ $RESTORE_CHECK_STATUS -ne 0 ]; then
-    echo "ERROR: pg_restore --list validation failed (code ${RESTORE_CHECK_STATUS})! Dump file may be corrupt. Aborting migration."
+    echo "ERROR: pg_restore --list validation failed (exit code ${RESTORE_CHECK_STATUS})! Dump file is invalid or corrupt. Aborting migration."
     exit 1
 fi
 
-echo "Backup validated: ${BACKUP_FILE} exists, is non-empty ($(du -h "$BACKUP_FILE" | cut -f1)), and archive header is verified."
+echo "Backup validated: ${BACKUP_FILE} exists, is non-empty ($(du -h "$BACKUP_FILE" | cut -f1)), and archive header is readable."
 ```
 
 ### 3.3 Recovery Decision Rules
@@ -221,7 +248,11 @@ WHERE n.nspname = 'auth'
 
 #### Phase 3: Apply Migrations 00002 Through 00009
 ```bash
-for file in $(ls migrations/0000[2-9]*.sql | sort); do
+for file in migrations/0000[2-9]*.sql; do
+    if [ ! -f "$file" ]; then
+        echo "ERROR: Migration file $file not found!"
+        exit 1
+    fi
     echo "Applying $file with transaction safety..."
     psql "$MIGRATION_DATABASE_URL" -v ON_ERROR_STOP=1 --single-transaction -f "$file"
     if [ $? -ne 0 ]; then
@@ -442,27 +473,53 @@ fi
 > - **Human Confirmation Required**: Verify the exact identities and confirm deletion before proceeding.
 > - **Never Run by Automated Tasks**: Cleanup must never be executed automatically by local agents or test runners.
 
-### Option A: Supabase Auth Administrative Workflow (Recommended)
-The safest, supported way to remove test accounts without issuing direct SQL against `auth.users`:
+### Option A: Supabase Auth Administrative Workflow (Strongly Recommended)
+The supported and safest method to remove disposable test accounts is through the official Supabase Auth management interfaces. This ensures that Supabase GoTrue cleans up its internal auth tables (identities, sessions, refresh tokens, MFA factors, audit logs) properly:
 1. Open the Supabase Dashboard for the Staging project.
 2. Navigate to **Authentication** $\rightarrow$ **Users**.
 3. Search for the exact recorded User UUID (`USER_A_ID`, then `USER_B_ID`).
 4. Verify the email matches `TEST_USER_A_EMAIL` and `TEST_USER_B_EMAIL`.
 5. Click **Delete User** for each account. GoTrue handles deletion and cascades to `public.profiles`, `public.events`, and child records.
 
-Alternatively, using the official Supabase Admin API via a secure release script:
+Alternatively, using the official Supabase Admin API (`supabase.auth.admin.deleteUser`) via a secure administrative script:
 ```bash
-# Example using Supabase Service-Role Admin API (curl)
+# Example using Supabase Service-Role Admin API via HTTP DELETE
+# (The service_role key provides administrative HTTP API access to GoTrue admin endpoints)
 # curl -X DELETE "${STAGING_SUPABASE_URL}/auth/v1/admin/users/${USER_A_ID}" \
 #      -H "apikey: ${SUPABASE_SERVICE_ROLE_KEY}" \
 #      -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}"
 ```
 
-### Option B: Exact SQL Deletion (Requires Elevated Privileges & Human Confirmation)
-If the operator chooses to execute SQL deletion, observe the following constraints:
-- **Privilege Requirement**: Deleting directly from `auth.users` requires `supabase_admin` or `service_role` superuser privileges; unprivileged connection roles (e.g. `planproof_app`) will fail with permission denied.
-- **Cascade Implication**: Deleting from `auth.users` triggers `ON DELETE CASCADE` to `public.profiles`, `public.events`, `public.event_budgets`, `public.event_milestone_statuses`, `public.event_vendor_checklist_items`, `public.crisis_recovery_records`, and `public.crisis_recovery_actions`.
+### Option B: Exceptional Direct SQL Fallback (Requires Project Owner Approval)
+Direct SQL deletion from `auth.users` is an exceptional fallback. It is subject to strict constraints:
+- **Privilege & Environment Warning**:
+  - `service_role` is an API role for PostgREST / GoTrue, **not** a PostgreSQL superuser, and does not automatically authorize direct SQL deletion from `auth.users`.
+  - In Supabase, `auth.users` is owned by `supabase_admin`. Whether a migration or maintenance role (such as `postgres`) possesses `DELETE` privileges on `auth.users` is environment-dependent and varies across Supabase configurations.
+  - Direct SQL deletion on `auth.users` must never be run without explicit approval and guidance from the **Supabase Project Owner**.
+- **Verified Referential Cascade Chain**:
+  Based on actual repository migration foreign-key constraints:
+  1. `public.profiles.id` directly references `auth.users(id) ON DELETE CASCADE` (Migration `00001`).
+  2. `public.events.user_id` directly references `public.profiles(id) ON DELETE CASCADE` (Migration `00002`).
+  3. The remaining five application tables reference `public.events(event_id) ON DELETE CASCADE`:
+     - `public.event_budgets` (Migration `00003`)
+     - `public.event_milestone_statuses` (Migration `00004`)
+     - `public.event_vendor_checklist_items` (Migration `00005`)
+     - `public.crisis_recovery_records` (Migration `00006`)
+     - `public.crisis_recovery_actions` (Migration `00007`, also referencing `crisis_recovery_records ON DELETE CASCADE`)
+  Deleting an `auth.users` row cascades through `profiles` $\rightarrow$ `events` $\rightarrow$ child records.
 
+#### Step 1: Pre-Deletion Read-Only Identity Verification
+Before any deletion is issued, query `auth.users` to verify the exact records:
+```bash
+psql "$MIGRATION_DATABASE_URL" -v ON_ERROR_STOP=1 -c "
+SELECT id, email, created_at 
+FROM auth.users 
+WHERE id IN ('${USER_A_ID}', '${USER_B_ID}');
+"
+```
+*Verification Gate:* The operator must visually inspect the output and verify that **exactly 2 rows** are returned, and their emails exactly match `${TEST_USER_A_EMAIL}` and `${TEST_USER_B_EMAIL}`. If 0 rows or unexpected rows appear, **STOP**.
+
+#### Step 2: Exact Direct SQL Deletion (Only After Verification & Project Owner Approval)
 ```bash
 # Verify both UUID and exact email match before deletion (exact match only)
 psql "$MIGRATION_DATABASE_URL" -v ON_ERROR_STOP=1 -c "

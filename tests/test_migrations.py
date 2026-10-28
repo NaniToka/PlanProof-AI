@@ -413,6 +413,53 @@ def test_staging_runbook_exact_cleanup_without_pattern_matching() -> None:
     assert "supabase_admin" in text.lower() or "service_role" in text.lower()
 
 
+def test_staging_runbook_staging_ref_assertion_prevents_empty_or_placeholder() -> None:
+    """Verify staging identity assertion prevents empty or unreplaced placeholder project references."""
+    text = RUNBOOK_PATH.read_text(encoding="utf-8")
+
+    # Ensures check for non-empty and non-placeholder STAGING_PROJECT_REF
+    assert "-z \"${STAGING_PROJECT_REF:-}\"" in text or "-z \"$STAGING_PROJECT_REF\"" in text or "STAGING_PROJECT_REF:-" in text
+    assert "<staging-project-ref>" in text
+    # Ensures abort on failure
+    assert "exit 1" in text
+    # Asserts secret safety: connection string password should not be printed
+    assert 'echo "ERROR: MIGRATION_DATABASE_URL' in text
+    assert 'echo "$MIGRATION_DATABASE_URL"' not in text
+
+
+def test_staging_runbook_backup_archive_listing_distinguished_from_restore_proof() -> None:
+    """Verify backup documentation explains pg_restore --list is a header check, not proof of restore success."""
+    text = RUNBOOK_PATH.read_text(encoding="utf-8")
+
+    # Verifies archive listing check distinction
+    assert "pg_restore --list" in text
+    assert "restore" in text.lower()
+    assert "basic" in text.lower() or "not prove" in text.lower() or "integrity check" in text.lower()
+
+    # Verifies single-file target validation
+    assert "! -f \"$BACKUP_FILE\"" in text or "-f \"$BACKUP_FILE\"" in text
+    assert "! -s \"$BACKUP_FILE\"" in text or "-s \"$BACKUP_FILE\"" in text
+
+
+def test_staging_runbook_cleanup_privilege_and_cascade_accuracy() -> None:
+    """Verify cleanup instructions accurately represent roles, owner approval, and referential cascade chain."""
+    text = RUNBOOK_PATH.read_text(encoding="utf-8")
+
+    # Does not mischaracterize service_role as a superuser
+    assert "service_role superuser" not in text.lower()
+    assert "project owner" in text.lower()
+
+    # Accurately identifies cascade chain through profiles and events to child tables
+    assert "public.profiles" in text
+    assert "public.events" in text
+    assert "public.event_budgets" in text
+    assert "public.crisis_recovery_records" in text
+
+    # Pre-action inspection query before SQL deletion
+    assert "SELECT id, email" in text or "select id, email" in text.lower()
+
+
+
 
 
 
