@@ -72,21 +72,25 @@ Never invent database hostnames or connection parameters. Always obtain the offi
 
 ---
 
-### Step A.4: Inspect Auth & JWT Signing Configuration
+### Step A.4: Inspect Auth & JWT Signing Configuration (Confirmed: ES256)
 Do not guess or assume which signing algorithm your Supabase project uses. Supabase projects vary by creation date and tier:
 
 1. In the left sidebar, navigate to **Project Settings** $\rightarrow$ **API**.
-2. Copy the **Project URL**: `https://<staging-project-ref>.supabase.co`.
+2. Copy the **Project URL**: `https://<staging-project-ref>.supabase.co` (Confirmed staging URL: `https://gtolvlwdipiqlqasatnf.supabase.co`).
 3. Under **Project API keys**, locate the **`anon` `public`** key. Copy this key (it is client-safe).
 4. Locate the **JWT Settings** section (or **Authentication** $\rightarrow$ **JWT Settings** / **Signing Keys** in newer dashboards):
    - **Inspect the Signing Method**:
-     - If the dashboard displays a **JWT Secret** (symmetric HMAC): The project signs access tokens using **`HS256`**.
-     - If the dashboard displays an **Asymmetric Key Pair**, **Signing Key ID**, or points to the JWKS endpoint (`/auth/v1/.well-known/jwks.json`): The project signs tokens using **`RS256`** or **`ES256`**.
-   - **When `SUPABASE_JWT_SECRET` is Required**:
-     - If the algorithm is `HS256`, you must copy the JWT Secret and configure `SUPABASE_JWT_SECRET`.
-     - If the algorithm is `RS256` or `ES256`, the backend validates signatures against the JWKS endpoint or `SUPABASE_JWT_PUBLIC_KEY`. `SUPABASE_JWT_SECRET` is **not** required and should be left empty.
+     - The confirmed staging project uses an **ECC (P-256)** key, which corresponds to **`ES256`** asymmetric signing.
+     - Tokens are verified against public keys retrieved dynamically from the JWKS endpoint (`https://gtolvlwdipiqlqasatnf.supabase.co/auth/v1/.well-known/jwks.json`).
+   - **Handling Previous / Legacy HS256 Signing Keys**:
+     - The Supabase dashboard may list a "Previous signing key" (symmetric HS256).
+     - **Old Token Rejection**: When `SUPABASE_JWT_ALGORITHMS` is pinned to `ES256`, any legacy token signed with HS256 will be rejected immediately with `INVALID_ALGORITHM` (HTTP 401).
+     - **No Legacy Support Needed**: For this fresh staging integration, database migrations have not been applied and no pre-existing active user sessions exist. GoTrue issues all new tokens using the active ECC key. Adding HS256 back into the allowlist would require storing `SUPABASE_JWT_SECRET` and needlessly weaken the algorithm allowlist.
+   - **When `SUPABASE_JWT_SECRET` is Required vs Omitted**:
+     - `SUPABASE_JWT_SECRET` is required **only** for symmetric `HS256`.
+     - For `ES256`, verification uses public keys via the JWKS endpoint or `SUPABASE_JWT_PUBLIC_KEY`. `SUPABASE_JWT_SECRET` is **not** required and should be left unset/empty.
    - **Pinning the Algorithm**:
-     - Once confirmed, set `SUPABASE_JWT_ALGORITHMS` to the exact algorithm identified (e.g. `RS256` or `HS256`). Pinning the algorithm ensures tokens signed with any other algorithm are rejected with `INVALID_ALGORITHM`.
+     - Pin `SUPABASE_JWT_ALGORITHMS=ES256`. This restricts token verification strictly to the active ECC algorithm and unconditionally blocks unsigned tokens, algorithm confusion attacks, or unexpected algorithm families.
 
 ---
 
@@ -123,22 +127,23 @@ APP_ENV=staging
 STORAGE_BACKEND=postgres
 
 # Supabase Public Parameters (Client-Safe)
-SUPABASE_URL=https://<staging-project-ref>.supabase.co
+# Project reference: gtolvlwdipiqlqasatnf (matches https://<staging-project-ref>.supabase.co)
+SUPABASE_URL=https://gtolvlwdipiqlqasatnf.supabase.co
 SUPABASE_ANON_KEY=<staging-anon-key>
 
-# Supabase Auth Verification Configuration
+# Supabase Auth Verification Configuration (ES256 Asymmetric via JWKS)
 SUPABASE_JWT_AUDIENCE=authenticated
-# Pin to the exact algorithm confirmed in Step A.4 (e.g. RS256, ES256, or HS256):
-SUPABASE_JWT_ALGORITHMS=RS256
-# Only required if algorithm is HS256; leave unset/empty if using RS256 or ES256:
+# Pinned strictly to the active confirmed ECC algorithm:
+SUPABASE_JWT_ALGORITHMS=ES256
+# Note: SUPABASE_JWT_SECRET is NOT needed for ES256 and should be left empty:
 SUPABASE_JWT_SECRET=
 
 # Database Connections (Obtained from Dashboard in Step A.3)
 # Runtime Application Pooler (Port 6543):
-DATABASE_URL=postgresql://postgres.<staging-project-ref>:<staging-db-password>@aws-0-<staging-region>.pooler.supabase.com:6543/postgres?sslmode=require
+DATABASE_URL=postgresql://postgres.gtolvlwdipiqlqasatnf:<staging-db-password>@aws-0-<staging-region>.pooler.supabase.com:6543/postgres?sslmode=require
 
 # Direct Session Connection for Migrations (Port 5432 - NEVER use 6543 for DDL):
-MIGRATION_DATABASE_URL=postgresql://postgres.<staging-project-ref>:<staging-db-password>@aws-0-<staging-region>.pooler.supabase.com:5432/postgres?sslmode=require
+MIGRATION_DATABASE_URL=postgresql://postgres.gtolvlwdipiqlqasatnf:<staging-db-password>@aws-0-<staging-region>.pooler.supabase.com:5432/postgres?sslmode=require
 ```
 
 > [!CAUTION]
@@ -146,6 +151,7 @@ MIGRATION_DATABASE_URL=postgresql://postgres.<staging-project-ref>:<staging-db-p
 > - Never request, print, or commit passwords, secrets, or `.env` files.
 > - Never print connection strings containing passwords to terminal logs.
 > - `DATABASE_URL` and `MIGRATION_DATABASE_URL` contain passwords and must **never** be shared or committed.
+> - Staging placeholders like `<staging-project-ref>` and `<staging-db-password>` must be replaced in `.env` with real credentials but never committed to version control.
 
 ### Step B.3: Restrict File Permissions and Verify Git Ignore
 1. Set restrictive file permissions so only your user account can read `.env`:

@@ -760,3 +760,152 @@ def test_create_and_verify_guest_token_rejects_insufficient_secret() -> None:
     assert exc.value.code == "INVALID_GUEST_SESSION"
 
 
+# ==============================================================================
+# 7. ES256 & Supabase Staging Auth Tests
+# ==============================================================================
+
+
+def test_verify_valid_es256_with_jwks_client_and_staging_url(ec_keypair: tuple[bytes, bytes]) -> None:
+    """Verify ES256 token verification using PyJWKClient and staging project URL resolution."""
+    priv_pem, pub_pem = ec_keypair
+    user_id = uuid4()
+    exp = datetime.now(timezone.utc) + timedelta(hours=1)
+    staging_url = "https://gtolvlwdipiqlqasatnf.supabase.co"
+    expected_iss = f"{staging_url}/auth/v1"
+
+    payload = {
+        "sub": str(user_id),
+        "email": "staging-operator@planproof.ai",
+        "aud": "authenticated",
+        "iss": expected_iss,
+        "exp": int(exp.timestamp()),
+    }
+    token = create_token(payload, secret_or_key=priv_pem, algorithm="ES256", headers={"kid": "staging-key-1"})
+
+    mock_signing_key = MagicMock()
+    mock_signing_key.key = pub_pem.decode("utf-8")
+
+    mock_jwks = MagicMock()
+    mock_jwks.get_signing_key_from_jwt.return_value = mock_signing_key
+
+    settings = Settings(
+        supabase_url=staging_url,
+        supabase_jwt_algorithms="ES256",
+    )
+    # Check automatic URL and issuer derivation
+    assert settings.resolved_jwks_url == f"{staging_url}/auth/v1/.well-known/jwks.json"
+    assert settings.resolved_jwt_issuer == expected_iss
+    assert settings.supabase_jwt_algorithms == ["ES256"]
+
+    verifier = SupabaseTokenVerifier(settings=settings, jwks_client=mock_jwks)
+    user = verifier.verify_token(token)
+
+    assert user.user_id == user_id
+    assert user.email == "staging-operator@planproof.ai"
+    assert user.role == "authenticated"
+    mock_jwks.get_signing_key_from_jwt.assert_called_once_with(token)
+
+
+def test_es256_pinning_rejects_legacy_hs256_token() -> None:
+    """Verify that when SUPABASE_JWT_ALGORITHMS is pinned to ES256, legacy HS256 tokens are rejected."""
+    user_id = uuid4()
+    exp = datetime.now(timezone.utc) + timedelta(hours=1)
+    payload = {
+        "sub": str(user_id),
+        "aud": "authenticated",
+        "iss": "https://gtolvlwdipiqlqasatnf.supabase.co/auth/v1",
+        "exp": int(exp.timestamp()),
+    }
+    legacy_hs_token = create_token(payload, secret_or_key=TEST_SECRET, algorithm="HS256")
+
+    settings = Settings(
+        supabase_url="https://gtolvlwdipiqlqasatnf.supabase.co",
+        supabase_jwt_algorithms="ES256",
+    )
+    verifier = SupabaseTokenVerifier(settings=settings, jwks_client=MagicMock())
+
+    with pytest.raises(AuthenticationError) as exc:
+        verifier.verify_token(legacy_hs_token)
+    assert exc.value.code == "INVALID_ALGORITHM"
+    assert "Algorithm 'HS256' is not in the allowed algorithms list" in exc.value.message
+
+
+def test_es256_jwks_unreachable_fails_closed(ec_keypair: tuple[bytes, bytes]) -> None:
+    """Verify that if the JWKS endpoint is unreachable, ES256 token verification fails closed with 503."""
+    from jwt import PyJWKClientConnectionError
+
+    priv_pem, _ = ec_keypair
+    user_id = uuid4()
+    exp = datetime.now(timezone.utc) + timedelta(hours=1)
+    payload = {
+        "sub": str(user_id),
+        "aud": "authenticated",
+        "iss": "https://gtolvlwdipiqlqasatnf.supabase.co/auth/v1",
+        "exp": int(exp.timestamp()),
+    }
+    token = create_token(payload, secret_or_key=priv_pem, algorithm="ES256", headers={"kid": "key-1"})
+
+    mock_jwks = MagicMock()
+    mock_jwks.get_signing_key_from_jwt.side_effect = PyJWKClientConnectionError("Connection refused to JWKS endpoint")
+
+    settings = Settings(
+        supabase_url="https://gtolvlwdipiqlqasatnf.supabase.co",
+        supabase_jwt_algorithms="ES256",
+    )
+    verifier = SupabaseTokenVerifier(settings=settings, jwks_client=mock_jwks)
+
+    with pytest.raises(AuthenticationError) as exc:
+        verifier.verify_token(token)
+    assert exc.value.code == "AUTH_PROVIDER_UNAVAILABLE"
+    assert exc.value.status_code == 503
+
+
+def test_es256_claims_validation_issuer_audience_and_uuid_sub(ec_keypair: tuple[bytes, bytes]) -> None:
+    """Verify that ES256 tokens validate issuer, audience, and UUID subject."""
+    priv_pem, pub_pem = ec_keypair
+    staging_url = "https://gtolvlwdipiqlqasatnf.supabase.co"
+    valid_iss = f"{staging_url}/auth/v1"
+
+    mock_signing_key = MagicMock()
+    mock_signing_key.key = pub_pem.decode("utf-8")
+    mock_jwks = MagicMock()
+    mock_jwks.get_signing_key_from_jwt.return_value = mock_signing_key
+
+    settings = Settings(
+        supabase_url=staging_url,
+        supabase_jwt_algorithms="ES256",
+    )
+    verifier = SupabaseTokenVerifier(settings=settings, jwks_client=mock_jwks)
+
+    # 1. Invalid issuer rejected
+    token_wrong_iss = create_token(
+        {"sub": str(uuid4()), "aud": "authenticated", "iss": "https://other.supabase.co/auth/v1", "exp": 9999999999},
+        secret_or_key=priv_pem,
+        algorithm="ES256",
+    )
+    with pytest.raises(AuthenticationError) as exc_iss:
+        verifier.verify_token(token_wrong_iss)
+    assert exc_iss.value.code == "INVALID_ISSUER"
+
+    # 2. Invalid audience rejected
+    token_wrong_aud = create_token(
+        {"sub": str(uuid4()), "aud": "anon", "iss": valid_iss, "exp": 9999999999},
+        secret_or_key=priv_pem,
+        algorithm="ES256",
+    )
+    with pytest.raises(AuthenticationError) as exc_aud:
+        verifier.verify_token(token_wrong_aud)
+    assert exc_aud.value.code == "INVALID_AUDIENCE"
+
+    # 3. Invalid UUID subject rejected
+    token_invalid_sub = create_token(
+        {"sub": "non-uuid-user", "aud": "authenticated", "iss": valid_iss, "exp": 9999999999},
+        secret_or_key=priv_pem,
+        algorithm="ES256",
+    )
+    with pytest.raises(AuthenticationError) as exc_sub:
+        verifier.verify_token(token_invalid_sub)
+    assert exc_sub.value.code == "INVALID_TOKEN"
+    assert "not a valid UUID" in exc_sub.value.message
+
+
