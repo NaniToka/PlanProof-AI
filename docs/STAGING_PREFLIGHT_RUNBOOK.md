@@ -2,7 +2,7 @@
 
 > [!CRITICAL]
 > **GOVERNANCE & SAFETY GATE**:
-> This runbook is strictly for **staging environment preflight and verification**.
+> This runbook is strictly for **staging environment preflight, configuration, and verification**.
 > - **Zero Automatic Execution**: No automated script, CI/CD pipeline, or AI agent is authorized to execute this runbook autonomously.
 > - **Human Authorization Required**: Execution requires explicit, written approval from the designated release engineer or technical lead.
 > - **Never Execute Against Production**: Verify target project credentials before issuing any command.
@@ -11,35 +11,201 @@
 
 ---
 
-## 1. Preconditions & Authorization Checklist
+## Document Roadmap & Execution Phases
 
-Before any terminal command is run, the human release engineer must confirm:
+This runbook is divided into three sequential phases for operators and beginners:
 
-- [ ] Written authorization is recorded for this staging migration window.
-- [ ] The target Supabase project is confirmed to be **Staging** (project ref matching `<staging-project-ref>`, never production).
-- [ ] Network routing permits direct session connections to PostgreSQL port `5432` (e.g. via direct IPv6 host or AWS IPv4 session pooler). Transaction pooler port `6543` must **not** be used for migrations.
-- [ ] Staging database credentials are held locally in environment variables and are **never** committed or printed to logs.
-- [ ] A dedicated pre-migration logical backup and recovery plan are reviewed and approved (Section 3).
-- [ ] Staging project administrators are on standby in case elevated `auth` schema trigger intervention is required (Section 4.2).
+1. **[Phase A — Manual Dashboard Setup](#phase-a--manual-dashboard-setup)**: Numbered step-by-step instructions to create and inspect a dedicated Supabase staging project in the web browser.
+2. **[Phase B — Local Configuration](#phase-b--local-configuration)**: How to configure local environment variables (`.env`) safely using dashboard-retrieved values and verify secret protection.
+3. **[Phase C — Preflight Checks & Staging Verification](#phase-c--preflight-checks--staging-verification)**: Preflight gates distinguishing offline automated tests from live database verification, sequential migration execution, and disposable account testing.
 
 ---
 
-## 2. Target Environment Identity & Secret-Safe Verification
+## Phase A — Manual Dashboard Setup
 
-To prevent accidental execution against production or misconfigured instances, perform a dedicated staging-identity check independent of port numbers.
+Follow these numbered steps in your web browser to create and inspect your staging project. **Do not attempt to create or configure the project via automated scripts.**
 
-### 2.1 Set Up Environment Variables (Secret-Safe)
+### Step A.1: Create a Dedicated Supabase Staging Project
+1. Open [https://supabase.com/dashboard](https://supabase.com/dashboard) and log in to your account.
+2. Select your Organization, then click **New Project**.
+3. Fill in the project details:
+   - **Name**: Enter a clear staging identifier, e.g., `planproof-staging`. (Never reuse a production or local project).
+   - **Database Password**: Click **Generate a password** (or type a strong, unique 24+ character password). Copy this password immediately and store it securely in your password manager.
+     > [!WARNING]
+     > Supabase does **not** display this password again after creation. If lost, you will need to reset it in project settings.
+   - **Region**: Choose the geographical region closest to your application hosting environment (e.g., `ap-south-1` Mumbai or `us-east-1` N. Virginia) to minimize network latency.
+   - **Pricing Plan**: Select Free or Pro tier as appropriate for staging.
+4. Click **Create new project** and wait 1–2 minutes while Supabase provisions the PostgreSQL instance, GoTrue auth service, and storage.
+
+---
+
+### Step A.2: Record Project Reference and Hostnames
+Once the project dashboard loads:
+1. In the browser URL bar, observe your project URL:
+   `https://supabase.com/dashboard/project/<staging-project-ref>`
+2. Record your `<staging-project-ref>` (a 20-character alphanumeric string, e.g. `abcdefghijklmnopqrst`). This reference uniquely identifies your staging project.
+3. Note your public API domain: `https://<staging-project-ref>.supabase.co`.
+
+---
+
+### Step A.3: Obtain Connection Strings (Port 5432 vs Port 6543)
+Never invent database hostnames or connection parameters. Always obtain the official connection strings directly from your dashboard:
+
+1. In the left sidebar, click the **Project Settings** icon (gear icon at the bottom left), then select **Database**.
+2. Scroll to the **Connection parameters** / **Connection string** section (or click the green **Connect** button at the top header).
+3. Select the **URI** tab. You will see two distinct connection options:
+
+#### Option 1: Direct / Session Connection (Port 5432) — Required for Migrations
+- **Port**: `5432`
+- **Dashboard Label**: **Session** (or Direct Connection).
+- **URI Format**: `postgresql://postgres.<staging-project-ref>:[YOUR-PASSWORD]@aws-0-[region].pooler.supabase.com:5432/postgres` (or direct IPv6 `db.<staging-project-ref>.supabase.co:5432`).
+- **Purpose**: Used **exclusively** for `MIGRATION_DATABASE_URL` (running DDL migrations, `pg_dump`, and catalog maintenance).
+- **Why Port 5432 is Mandatory for DDL**: Schema migrations execute statements like `CREATE TABLE`, `ALTER TABLE`, table-level locks, and multi-statement transactional scripts. Transaction poolers do not support DDL commands or persistent transaction states.
+
+#### Option 2: Transaction Pooler Connection (Port 6543) — Required for Application Runtime
+- **Port**: `6543`
+- **Dashboard Label**: **Transaction** (Supavisor / PgBouncer pooler).
+- **URI Format**: `postgresql://postgres.<staging-project-ref>:[YOUR-PASSWORD]@aws-0-[region].pooler.supabase.com:6543/postgres`
+- **Purpose**: Used for `DATABASE_URL` (FastAPI application runtime queries).
+- **Why Port 6543 is Used for Runtime**: The transaction pooler multiplexes short queries across a manageable number of backend PostgreSQL connections, protecting the database from connection exhaustion when handling web requests.
+- **Statement Cache Requirement**: In PlanProof AI, `database_statement_cache_size=0` is automatically configured so that asyncpg does not issue named prepared statements that fail in transaction pooling mode.
+
+---
+
+### Step A.4: Inspect Auth & JWT Signing Configuration
+Do not guess or assume which signing algorithm your Supabase project uses. Supabase projects vary by creation date and tier:
+
+1. In the left sidebar, navigate to **Project Settings** $\rightarrow$ **API**.
+2. Copy the **Project URL**: `https://<staging-project-ref>.supabase.co`.
+3. Under **Project API keys**, locate the **`anon` `public`** key. Copy this key (it is client-safe).
+4. Locate the **JWT Settings** section (or **Authentication** $\rightarrow$ **JWT Settings** / **Signing Keys** in newer dashboards):
+   - **Inspect the Signing Method**:
+     - If the dashboard displays a **JWT Secret** (symmetric HMAC): The project signs access tokens using **`HS256`**.
+     - If the dashboard displays an **Asymmetric Key Pair**, **Signing Key ID**, or points to the JWKS endpoint (`/auth/v1/.well-known/jwks.json`): The project signs tokens using **`RS256`** or **`ES256`**.
+   - **When `SUPABASE_JWT_SECRET` is Required**:
+     - If the algorithm is `HS256`, you must copy the JWT Secret and configure `SUPABASE_JWT_SECRET`.
+     - If the algorithm is `RS256` or `ES256`, the backend validates signatures against the JWKS endpoint or `SUPABASE_JWT_PUBLIC_KEY`. `SUPABASE_JWT_SECRET` is **not** required and should be left empty.
+   - **Pinning the Algorithm**:
+     - Once confirmed, set `SUPABASE_JWT_ALGORITHMS` to the exact algorithm identified (e.g. `RS256` or `HS256`). Pinning the algorithm ensures tokens signed with any other algorithm are rejected with `INVALID_ALGORITHM`.
+
+---
+
+### Step A.5: Understand Database Roles and RLS Permissions
+In Supabase:
+1. The migration connection logs in as the administrative role (`postgres`).
+2. PlanProof AI application queries run under transaction-local RLS claims:
+   ```sql
+   SELECT set_config('role', 'authenticated', true);
+   SELECT set_config('request.jwt.claim.sub', '<user-uuid>', true);
+   ```
+3. The connecting database role must have permission to switch roles (`GRANT authenticated TO <app_role>;`). The default `postgres` role has this membership.
+4. If role switching fails, the repository fails closed, aborts the transaction, and raises `RepositoryError`.
+
+---
+
+## Phase B — Local Configuration
+
+Now that you have retrieved your project parameters from the dashboard, configure your local development and staging environment files safely.
+
+### Step B.1: Prepare `.env` from Example Template
+```bash
+# In the PlanProof-AI root directory:
+cp .env.example .env
+```
+
+### Step B.2: Populate `.env` with Dashboard Values (Secret-Safe Template)
+Open `.env` in your editor. Replace the placeholders with the actual values copied from your Supabase dashboard:
+
+```ini
+# Application Environment
+APP_NAME=PlanProof AI
+APP_ENV=staging
+STORAGE_BACKEND=postgres
+
+# Supabase Public Parameters (Client-Safe)
+SUPABASE_URL=https://<staging-project-ref>.supabase.co
+SUPABASE_ANON_KEY=<staging-anon-key>
+
+# Supabase Auth Verification Configuration
+SUPABASE_JWT_AUDIENCE=authenticated
+# Pin to the exact algorithm confirmed in Step A.4 (e.g. RS256, ES256, or HS256):
+SUPABASE_JWT_ALGORITHMS=RS256
+# Only required if algorithm is HS256; leave unset/empty if using RS256 or ES256:
+SUPABASE_JWT_SECRET=
+
+# Database Connections (Obtained from Dashboard in Step A.3)
+# Runtime Application Pooler (Port 6543):
+DATABASE_URL=postgresql://postgres.<staging-project-ref>:<staging-db-password>@aws-0-<staging-region>.pooler.supabase.com:6543/postgres?sslmode=require
+
+# Direct Session Connection for Migrations (Port 5432 - NEVER use 6543 for DDL):
+MIGRATION_DATABASE_URL=postgresql://postgres.<staging-project-ref>:<staging-db-password>@aws-0-<staging-region>.pooler.supabase.com:5432/postgres?sslmode=require
+```
+
+> [!CAUTION]
+> **Secret Handling Rules**:
+> - Never request, print, or commit passwords, secrets, or `.env` files.
+> - Never print connection strings containing passwords to terminal logs.
+> - `DATABASE_URL` and `MIGRATION_DATABASE_URL` contain passwords and must **never** be shared or committed.
+
+### Step B.3: Restrict File Permissions and Verify Git Ignore
+1. Set restrictive file permissions so only your user account can read `.env`:
+   ```bash
+   chmod 600 .env
+   ```
+2. Verify that `.env` is covered by `.gitignore`:
+   ```bash
+   git check-ignore -v .env
+   ```
+   *Expected Output:* `.gitignore:3:.env` (or similar confirming git ignores the file).
+3. Confirm Git working tree status:
+   ```bash
+   git status
+   ```
+   *Expected Output:* `.env` does **not** appear in untracked files.
+
+---
+
+## Phase C — Preflight Checks & Staging Verification
+
+Phase C specifies all verification gates. **Do not apply any migrations until the preflight checks pass.**
+
+---
+
+### Section C.1: Offline Preflight Verification (Local Machine)
+These tests run completely offline and verify application logic, configuration parsing, and schema integrity without touching any remote database:
+
+```bash
+# 1. Run migration and runbook documentation integrity tests:
+.venv/bin/pytest tests/test_migrations.py -v
+
+# 2. Run configuration and secret protection tests:
+.venv/bin/pytest tests/test_config.py -v
+
+# 3. Run cryptographic JWT authentication tests:
+.venv/bin/pytest tests/test_auth.py -v
+
+# 4. Run the full offline regression suite:
+.venv/bin/pytest
+```
+*Expected Result:* All tests pass (with only real network/database tests appropriately skipped). If any offline test fails, halt and fix the local code first.
+
+---
+
+### Section C.2: Target Environment Identity & Secret-Safe Verification (Live Staging)
+Once authorized by the release lead to proceed with staging verification:
+
+#### 1. Set Staging Shell Variables
 ```bash
 # Set staging environment variables (replace placeholders with actual staging credentials)
 export STAGING_PROJECT_REF="<staging-project-ref>"
 export MIGRATION_DATABASE_URL="postgresql://postgres.<staging-project-ref>:<staging-db-password>@aws-0-<staging-region>.pooler.supabase.com:5432/postgres"
 
-# Optional application runtime URL (for smoke testing)
+# Application runtime URL (for smoke testing)
 export STAGING_SUPABASE_URL="https://<staging-project-ref>.supabase.co"
 export STAGING_SUPABASE_ANON_KEY="<staging-anon-key>"
 ```
 
-### 2.2 Secret-Safe Identity Assertion
+#### 2. Secret-Safe Identity Assertion
 Verify that the target connection URL references the staging project without printing credentials to the console:
 
 ```bash
@@ -70,7 +236,7 @@ fi
 echo "Preflight check PASSED: Target matches staging ref [${STAGING_PROJECT_REF}] on session port 5432."
 ```
 
-### 2.3 Verify Database Identity via SQL
+#### 3. Verify Database Identity via Non-Destructive SQL
 Execute a non-destructive query to confirm database identity and connection role:
 
 ```bash
@@ -88,7 +254,7 @@ SELECT
 
 ---
 
-## 3. Pre-Migration Staging Backup & Recovery Protocol
+### Section C.3: Pre-Migration Staging Backup & Recovery Protocol
 
 Staging databases frequently hold testing datasets, staging test profiles, or seed configurations. Prior to applying migrations, the operator must execute and rigorously validate a logical backup.
 
@@ -100,7 +266,7 @@ Staging databases frequently hold testing datasets, staging test profiles, or se
 > - **Archive Listing != Restore Proof:** Running `pg_restore --list` is a basic archive integrity check verifying that the custom-format header and Table of Contents (TOC) are readable. It does **not** prove that restoring the objects into the database will succeed (it does not execute SQL DDL/DML, test target schema conflicts, or verify foreign-key / trigger constraints during restore).
 > - **Recovery Assumption Warning:** A dump must never be assumed recoverable solely because the command exited without error. A valid restore plan must be approved before proceeding.
 
-### 3.1 Execute Logical Backup
+#### 1. Execute Logical Backup
 ```bash
 # Generate timestamped backup file with restrictive permissions
 BACKUP_FILE="staging_backup_public_pre_migration_$(date +%Y%m%d_%H%M%S).dump"
@@ -122,7 +288,7 @@ fi
 chmod 600 "$BACKUP_FILE"
 ```
 
-### 3.2 Validate Backup Existence, Non-Empty Size, and Dump Integrity
+#### 2. Validate Backup Existence, Non-Empty Size, and Dump Integrity
 ```bash
 # 1. Assert single target backup file is explicitly identified without unquoted wildcards
 if [ -z "${BACKUP_FILE:-}" ]; then
@@ -155,8 +321,9 @@ fi
 echo "Backup validated: ${BACKUP_FILE} exists, is non-empty ($(du -h "$BACKUP_FILE" | cut -f1)), and archive header is readable."
 ```
 
-### 3.3 Recovery Decision Rules
+#### 3. Recovery Decision Rules
 - If any migration fails, **do NOT execute down scripts** (`migrations/down/`).
+- Down migrations contain destructive `DROP TABLE ... CASCADE` statements and will wipe out existing staging data.
 - Prefer **fixing forward** (diagnosing the root cause and resuming from the failed migration boundary).
 - If the public schema becomes corrupted or inconsistent, restore using `pg_restore`:
   ```bash
@@ -166,11 +333,11 @@ echo "Backup validated: ${BACKUP_FILE} exists, is non-empty ($(du -h "$BACKUP_FI
 
 ---
 
-## 4. Sequential Migration Execution (Per-File Transaction Safety)
+### Section C.4: Sequential Migration Execution (Per-File Transaction Safety)
 
 Migrations must be applied in strict forward order (`00001` through `00009`). Each migration file is wrapped in an individual transaction using `--single-transaction` (`psql -1`) together with `-v ON_ERROR_STOP=1`.
 
-### 4.1 Migration Sequence & File Roster
+#### Migration Sequence & File Roster
 
 | Step | Migration File | Target Scope | Description |
 | :---: | :--- | :--- | :--- |
@@ -186,9 +353,7 @@ Migrations must be applied in strict forward order (`00001` through `00009`). Ea
 
 ---
 
-### 4.2 Step-by-Step Execution Protocol
-
-#### Phase 1: Apply Migration 00001 (Profile Creation & Trigger)
+#### Step 1: Apply Migration 00001 (Profile Creation & Trigger)
 ```bash
 echo "Applying migrations/00001_create_profiles.sql..."
 psql "$MIGRATION_DATABASE_URL" -v ON_ERROR_STOP=1 --single-transaction -f "migrations/00001_create_profiles.sql"
@@ -199,7 +364,7 @@ if [ $? -ne 0 ]; then
 fi
 ```
 
-#### Phase 2: Mandatory Intermediate Trigger Gate (Post-00001 Verification)
+#### Step 2: Mandatory Intermediate Trigger Gate (Post-00001 Verification)
 Immediately run the catalog verification query before applying migration 00002:
 
 ```bash
@@ -246,7 +411,7 @@ WHERE n.nspname = 'auth'
 
 ---
 
-#### Phase 3: Apply Migrations 00002 Through 00009
+#### Step 3: Apply Migrations 00002 Through 00009
 ```bash
 for file in migrations/0000[2-9]*.sql; do
     if [ ! -f "$file" ]; then
@@ -264,8 +429,7 @@ done
 
 ---
 
-### 4.3 Stop Conditions & Partial-Failure Recovery Protocol
-
+#### Stop Conditions & Partial-Failure Recovery Protocol
 If any migration file fails mid-run:
 1. **HALT IMMEDIATELY**: Do not re-run all scripts blindly.
 2. **DO NOT RUN DOWN SCRIPTS**: Rollback scripts in `migrations/down/` contain destructive `DROP TABLE ... CASCADE` statements.
@@ -280,11 +444,11 @@ If any migration file fails mid-run:
 
 ---
 
-## 5. Comprehensive Post-Migration Catalog & Security Verification
+### Section C.5: Post-Migration Catalog & Security Verification
 
 Execute the following verification queries to confirm database health:
 
-### 5.1 Verify Table Roster (Expected: 7 tables)
+#### 1. Verify Table Roster (Expected: 7 tables)
 ```bash
 psql "$MIGRATION_DATABASE_URL" -v ON_ERROR_STOP=1 -c "
 SELECT tablename, rowsecurity
@@ -299,7 +463,7 @@ ORDER BY tablename;
 ```
 *Expected Result:* Exactly 7 tables returned, each with `rowsecurity = true`.
 
-### 5.2 Verify Policy Count (Expected: 27 policies)
+#### 2. Verify Policy Count (Expected: 27 policies)
 ```bash
 psql "$MIGRATION_DATABASE_URL" -v ON_ERROR_STOP=1 -c "
 SELECT tablename, count(*) AS policy_count
@@ -317,9 +481,9 @@ ORDER BY tablename;
 - `event_vendor_checklist_items`: 4
 - `events`: 4
 - `profiles`: 3
-- **Total:** 27 policies.
+- **Total: 27 policies.**
 
-### 5.3 Verify Role Grant Boundaries
+#### 3. Verify Role Grant Boundaries
 ```bash
 psql "$MIGRATION_DATABASE_URL" -v ON_ERROR_STOP=1 -c "
 SELECT 
@@ -339,13 +503,13 @@ ORDER BY table_name;
 
 ---
 
-## 6. End-to-End Functional Verification (Disposable Staging Accounts)
+### Section C.6: End-to-End Functional Verification (Disposable Staging Accounts)
 
 > [!NOTE]
 > Catalog inspection proves that tables, triggers, and policies are defined. It does **not** prove that Supabase GoTrue event emission, network routing, and application tenant isolation operate end-to-end.
 > The operator must execute this functional test using explicitly recorded disposable test accounts.
 
-### 6.1 Verified API Route Inventory
+#### Verified API Route Inventory
 
 | Capability | Path | Method | Auth Requirement | Backend Handler |
 | :--- | :--- | :--- | :--- | :--- |
@@ -364,7 +528,7 @@ ORDER BY table_name;
 
 ---
 
-### 6.2 Step-by-Step Functional Walkthrough
+#### Functional Walkthrough Steps
 
 Set up testing variables:
 ```bash
@@ -374,12 +538,12 @@ TEST_USER_B_EMAIL="test-preflight-b-$(date +%s)@staging.planproof.ai"
 TEST_PASSWORD="StagingPreflightPassword123!"
 ```
 
-#### Step 1: Health Check (Public Route)
+##### 1. Health Check (Public Route)
 ```bash
 curl -s -f "${API_BASE_URL}/health" | grep '"status":"ok"'
 ```
 
-#### Step 2: Register Tenant A via Supabase GoTrue
+##### 2. Register Tenant A via Supabase GoTrue
 ```bash
 SIGNUP_RESPONSE=$(curl -s -X POST "${STAGING_SUPABASE_URL}/auth/v1/signup" \
     -H "apikey: ${STAGING_SUPABASE_ANON_KEY}" \
@@ -392,7 +556,7 @@ USER_A_TOKEN=$(echo "$SIGNUP_RESPONSE" | jq -r '.access_token')
 echo "RECORDED DISPOSABLE USER A -> UUID: ${USER_A_ID}, EMAIL: ${TEST_USER_A_EMAIL}"
 ```
 
-#### Step 3: Verify Profile Provisioning Trigger Fired
+##### 3. Verify Profile Provisioning Trigger Fired
 Query the database to confirm `handle_new_user()` auto-provisioned the profile row:
 ```bash
 psql "$MIGRATION_DATABASE_URL" -v ON_ERROR_STOP=1 -c "
@@ -401,10 +565,10 @@ FROM public.profiles
 WHERE id = '${USER_A_ID}';
 "
 ```
-*Expected Result:* Exactly 1 row returned with `email = TEST_USER_A_EMAIL` and `full_name = 'Test Operator A'`.
+*Expected Result:* Exactly 1 row returned with `email = TEST_USER_A_EMAIL` and `full_name = 'Test Operator A'`.  
 *Stop Condition:* If 0 rows returned, the trigger failed. Abort preflight!
 
-#### Step 4: Create Event Under Tenant A (Authenticated Route)
+##### 4. Create Event Under Tenant A (Authenticated Route)
 ```bash
 CREATE_EVENT_PAYLOAD='{
   "event_type": "wedding",
@@ -426,7 +590,7 @@ EVENT_ID=$(echo "$EVENT_RESPONSE" | jq -r '.event_id')
 echo "Created Event ID: ${EVENT_ID}"
 ```
 
-#### Step 5: Verify Event Retrieval and Readiness
+##### 5. Verify Event Retrieval and Readiness
 ```bash
 # Retrieve Event
 curl -s -f -H "Authorization: Bearer ${USER_A_TOKEN}" "${API_BASE_URL}/api/v1/events/${EVENT_ID}" | grep '"event_id":'
@@ -435,7 +599,7 @@ curl -s -f -H "Authorization: Bearer ${USER_A_TOKEN}" "${API_BASE_URL}/api/v1/ev
 curl -s -f -H "Authorization: Bearer ${USER_A_TOKEN}" "${API_BASE_URL}/api/v1/events/${EVENT_ID}/readiness" | grep '"overall_score":'
 ```
 
-#### Step 6: Verify Tenant Isolation (Tenant B Cannot Access Tenant A's Event)
+##### 6. Verify Tenant Isolation (Tenant B Cannot Access Tenant A's Event)
 Register Tenant B and attempt cross-tenant access:
 ```bash
 # Register Tenant B
@@ -464,17 +628,17 @@ fi
 
 ---
 
-## 7. Safe Staging Teardown & Exact Disposable-Account Cleanup
+### Section C.7: Safe Staging Teardown & Exact Disposable-Account Cleanup
 
 > [!CAUTION]
 > **EXACT DISPOSABLE-ACCOUNT CLEANUP PROTOCOL**:
 > - **Supported Auth Interfaces Only**: Use the official Supabase Dashboard or the supported Supabase Auth Admin API. Direct SQL deletion from `auth.users` is prohibited in normal staging cleanup procedures.
-> - **Exact Recorded Identities Only**: Deletion must target **only** the exact UUIDs (`USER_A_ID`, `USER_B_ID`) and exact emails (`TEST_USER_A_EMAIL`, `TEST_USER_B_EMAIL`) explicitly recorded in Step 6.2.
+> - **Exact Recorded Identities Only**: Deletion must target **only** the exact UUIDs (`USER_A_ID`, `USER_B_ID`) and exact emails (`TEST_USER_A_EMAIL`, `TEST_USER_B_EMAIL`) explicitly recorded in Section C.6.
 > - **Never Use Pattern Deletion**: Never run broad deletion queries (e.g. `WHERE email LIKE '%...'` or domain matching). Broad pattern matching risks deleting other staging testers or pre-existing QA accounts.
 > - **Human Confirmation Required**: The operator must visually verify the recorded UUIDs and associated emails and obtain operator confirmation before proceeding.
 > - **Never Run by Automated Tasks**: Cleanup must never be executed automatically by local agents, background jobs, or CI/CD pipelines.
 
-### 7.1 Why Direct SQL Deletion from `auth.users` is Excluded
+#### Why Direct SQL Deletion from `auth.users` is Excluded
 1. **Managed Service Boundary**: In Supabase, the `auth` schema and `auth.users` table are owned and managed by GoTrue (`supabase_admin`). Direct database manipulation bypasses GoTrue auth lifecycle hooks (such as sessions, identities, refresh tokens, MFA factors, and audit logs), which can leave orphaned internal authentication state.
 2. **Role Privilege Accuracy**: The `service_role` is an HTTP API role used with secret API keys for PostgREST and GoTrue administrative endpoints. It is **not** a PostgreSQL superuser and does not authorize direct SQL modifications on `auth.users`.
 3. **Cascading Teardown**: When a user is deleted through the supported Auth management interface (Dashboard or Admin API), PostgreSQL enforces foreign-key constraints defined in PlanProof migrations:
@@ -490,7 +654,7 @@ fi
 
 ---
 
-### 7.2 Method 1: Supabase Dashboard (Recommended UI Workflow)
+#### Method 1: Supabase Dashboard (Recommended UI Workflow)
 The most transparent and safe operational method:
 1. Log in to the official **Supabase Dashboard** for the verified Staging project.
 2. Navigate to **Authentication** $\rightarrow$ **Users**.
@@ -502,7 +666,7 @@ The most transparent and safe operational method:
 
 ---
 
-### 7.3 Method 2: Supabase Auth Admin API (Supported API Workflow)
+#### Method 2: Supabase Auth Admin API (Supported API Workflow)
 If performing teardown programmatically via a release workstation:
 1. Verify that `USER_A_ID` and `USER_B_ID` are non-empty and match the exact recorded values.
 2. Obtain explicit operator confirmation before issuing the API calls:
@@ -532,7 +696,7 @@ If performing teardown programmatically via a release workstation:
 
 ---
 
-## 8. Summary of Stop Conditions & Escalation Roster
+## Summary of Stop Conditions & Escalation Roster
 
 | Checkpoint | Failure Indicator | Required Action |
 | :--- | :--- | :--- |

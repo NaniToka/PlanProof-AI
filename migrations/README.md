@@ -2,7 +2,10 @@
 
 This directory contains versioned PostgreSQL migrations and Row Level Security (RLS) policies for PlanProof AI's persistent data layer on Supabase.
 
-For staging execution, operator preflight procedures, and end-to-end verification workflows, see the dedicated [Staging Preflight Runbook](../docs/STAGING_PREFLIGHT_RUNBOOK.md).
+For staging execution, operator preflight procedures, and end-to-end verification workflows, follow the 3-phase [Staging Preflight Runbook](../docs/STAGING_PREFLIGHT_RUNBOOK.md):
+- **Phase A — Manual Dashboard Setup**: Step-by-step guidance for creating a staging project, obtaining connection strings, and inspecting JWT signing keys.
+- **Phase B — Local Configuration**: Safe `.env` variable configuration and secret protection.
+- **Phase C — Preflight Checks & Staging Verification**: Offline test gates, live target identity assertion, validated logical backups, and per-file transaction migrations.
 
 ---
 

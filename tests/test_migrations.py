@@ -466,6 +466,32 @@ def test_staging_runbook_cleanup_privilege_and_cascade_accuracy() -> None:
     assert "public.crisis_recovery_records" in text
 
 
+def test_staging_runbook_three_phases_and_beginner_guidance() -> None:
+    """Verify runbook is organized into Phase A (Dashboard Setup), Phase B (Local Config), and Phase C (Preflight)."""
+    text = RUNBOOK_PATH.read_text(encoding="utf-8")
+
+    # Three distinct phases
+    assert "Phase A — Manual Dashboard Setup" in text
+    assert "Phase B — Local Configuration" in text
+    assert "Phase C — Preflight Checks" in text
+
+    # Phase A instructions: manual project creation, connection strings, JWT algorithm identification
+    assert "https://supabase.com/dashboard" in text
+    assert "planproof-staging" in text
+    assert "5432" in text and "6543" in text
+    assert "SUPABASE_JWT_ALGORITHMS" in text
+    assert "RS256" in text or "ES256" in text or "HS256" in text
+
+    # Phase B instructions: .env copy, chmod 600, git check-ignore
+    assert "cp .env.example .env" in text
+    assert "chmod 600 .env" in text
+    assert "git check-ignore" in text
+
+    # Phase C: clearly separates offline preflight checks from live preflight
+    assert "Offline Preflight Verification" in text or "offline" in text.lower()
+    assert "pytest" in text
+
+
 
 
 
