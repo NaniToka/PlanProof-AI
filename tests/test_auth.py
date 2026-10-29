@@ -355,6 +355,46 @@ def test_verify_disallowed_algorithm_rejected() -> None:
     assert exc.value.code == "INVALID_ALGORITHM"
 
 
+def test_algorithm_pinning_rejects_unpinned_algorithms(rsa_keypair: tuple[bytes, bytes]) -> None:
+    """Verify production operator can pin RS256 and reject HS256, or pin HS256 and reject RS256."""
+    priv_pem, pub_pem = rsa_keypair
+    user_id = uuid4()
+    exp = datetime.now(timezone.utc) + timedelta(hours=1)
+    payload = {
+        "sub": str(user_id),
+        "aud": "authenticated",
+        "exp": int(exp.timestamp()),
+    }
+    hs_token = create_token(payload, secret_or_key=TEST_SECRET, algorithm="HS256")
+    rs_token = jwt.encode(payload, priv_pem, algorithm="RS256")
+
+    # Case 1: Pinned to RS256 only (rejects HS256)
+    rs_pinned_settings = Settings(
+        supabase_jwt_algorithms=["RS256"],
+        supabase_jwt_public_key=SecretStr(pub_pem.decode("utf-8")),
+    )
+    rs_verifier = SupabaseTokenVerifier(settings=rs_pinned_settings)
+    with pytest.raises(AuthenticationError) as exc_hs:
+        rs_verifier.verify_token(hs_token)
+    assert exc_hs.value.code == "INVALID_ALGORITHM"
+    # But validly verifies RS256
+    user = rs_verifier.verify_token(rs_token)
+    assert user.user_id == user_id
+
+    # Case 2: Pinned to HS256 only (rejects RS256)
+    hs_pinned_settings = Settings(
+        supabase_jwt_algorithms=["HS256"],
+        supabase_jwt_secret=SecretStr(TEST_SECRET),
+    )
+    hs_verifier = SupabaseTokenVerifier(settings=hs_pinned_settings)
+    with pytest.raises(AuthenticationError) as exc_rs:
+        hs_verifier.verify_token(rs_token)
+    assert exc_rs.value.code == "INVALID_ALGORITHM"
+    # But validly verifies HS256
+    user_hs = hs_verifier.verify_token(hs_token)
+    assert user_hs.user_id == user_id
+
+
 def test_missing_secret_fails_closed() -> None:
     """Verify that if SUPABASE_JWT_SECRET is missing, verifier fails closed rather than treating token as valid."""
     user_id = uuid4()

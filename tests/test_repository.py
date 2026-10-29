@@ -513,6 +513,35 @@ async def test_postgres_transaction_rollback_on_failure() -> None:
 
 
 @pytest.mark.asyncio
+async def test_postgres_role_switch_failure_fails_closed_and_rolls_back() -> None:
+    """Verify that failure to switch to 'authenticated' role immediately rolls back and raises RepositoryError."""
+    settings = Settings(storage_backend="postgres", database_url=LOCAL_PG_URL)
+    repo = PostgresEventRepository(settings)
+
+    mock_pool = MagicMock()
+    mock_conn = AsyncMock()
+    mock_tx = MagicMock()
+    mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
+    mock_tx.__aexit__ = AsyncMock(return_value=None)
+    mock_conn.transaction = MagicMock(return_value=mock_tx)
+
+    mock_pool.acquire.return_value.__aenter__.return_value = mock_conn
+    repo._pool = mock_pool
+
+    # Role switch fails immediately (e.g. permission denied to set role)
+    user_id = uuid4()
+    mock_conn.execute.side_effect = asyncpg.InsufficientPrivilegeError('permission denied to set role "authenticated"')
+
+    event = make_test_event_profile(user_id=user_id)
+    with pytest.raises(RepositoryError) as exc_info:
+        await repo.create(event, user_id=user_id)
+
+    assert "permission denied" in str(exc_info.value)
+    # Ensure transaction context was entered (and aborted)
+    assert mock_conn.transaction.called
+
+
+@pytest.mark.asyncio
 async def test_postgres_connection_failure_mapping() -> None:
     """Verify asyncpg connection errors are wrapped in DatabaseConnectionError."""
     settings = Settings(storage_backend="postgres", database_url="postgresql://user:secret@127.0.0.1:9999/nodb")
