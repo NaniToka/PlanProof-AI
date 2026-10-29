@@ -72,6 +72,7 @@ class PostgresEventRepository(BaseEventRepository):
         default_user_id: UUID | None = None,
         pool: asyncpg.Pool | None = None,
         settings: Settings | None = None,
+        statement_cache_size: int = 0,
     ) -> None:
         """Initialize PostgreSQL repository configuration without connecting immediately.
 
@@ -83,6 +84,7 @@ class PostgresEventRepository(BaseEventRepository):
             default_user_id: Deprecated optional user UUID (Step 2 requires verified user_id).
             pool: Optional pre-configured asyncpg.Pool instance (useful for testing/injection).
             settings: Optional Settings instance.
+            statement_cache_size: Prepared statement cache size (0 disables cache for transaction pooler compatibility).
         """
         if isinstance(database_url, Settings):
             settings = database_url
@@ -94,12 +96,14 @@ class PostgresEventRepository(BaseEventRepository):
             self._min_size = settings.database_pool_min_size
             self._max_size = settings.database_pool_max_size
             self._timeout = settings.database_connection_timeout
+            self._statement_cache_size = settings.database_statement_cache_size
         else:
             self.settings = None
             self._database_url = database_url or ""
             self._min_size = min_size
             self._max_size = max_size
             self._timeout = timeout
+            self._statement_cache_size = statement_cache_size
 
         self._default_user_id = default_user_id
         self._pool = pool
@@ -118,11 +122,13 @@ class PostgresEventRepository(BaseEventRepository):
                     min_size=self._min_size,
                     max_size=self._max_size,
                     timeout=self._timeout,
+                    statement_cache_size=self._statement_cache_size,
                 )
                 logger.info(
-                    "PostgreSQL connection pool initialized (min=%d, max=%d)",
+                    "PostgreSQL connection pool initialized (min=%d, max=%d, statement_cache_size=%d)",
                     self._min_size,
                     self._max_size,
+                    self._statement_cache_size,
                 )
             except Exception as exc:
                 logger.error("Failed to establish PostgreSQL connection pool: %s", type(exc).__name__)

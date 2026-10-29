@@ -195,6 +195,11 @@ class Settings(BaseSettings):
         gt=0.0,
         description="Timeout in seconds for establishing PostgreSQL connections",
     )
+    database_statement_cache_size: int = Field(
+        default=0,
+        ge=0,
+        description="Prepared statement cache size for asyncpg connection pool (0 required for transaction pooler compatibility)",
+    )
 
     # CORS origins (typed as list[str] | str to avoid premature json.loads in pydantic-settings)
     allowed_cors_origins: list[str] | str = Field(

@@ -525,6 +525,24 @@ async def test_postgres_connection_failure_mapping() -> None:
         assert "secret" not in str(exc_info.value)
 
 
+@pytest.mark.asyncio
+async def test_postgres_repository_disables_statement_cache_for_transaction_poolers() -> None:
+    """Verify asyncpg connection pool sets statement_cache_size=0 for Supabase transaction pooler."""
+    settings = Settings(
+        storage_backend="postgres",
+        database_url="postgresql://user:pass@pooler.supabase.com:6543/postgres",
+        database_statement_cache_size=0,
+    )
+    repo = PostgresEventRepository(settings)
+
+    with patch("asyncpg.create_pool", new_callable=AsyncMock) as mock_pool:
+        await repo.connect()
+        mock_pool.assert_called_once()
+        _, kwargs = mock_pool.call_args
+        assert kwargs.get("statement_cache_size") == 0
+
+
+
 # ==============================================================================
 # 5. Live PostgreSQL Integration Tests (Real Database)
 # ==============================================================================
