@@ -77,7 +77,11 @@ Do not guess or assume which signing algorithm your Supabase project uses. Supab
 
 1. In the left sidebar, navigate to **Project Settings** $\rightarrow$ **API**.
 2. Copy the **Project URL**: `https://<staging-project-ref>.supabase.co` (Confirmed staging URL: `https://gtolvlwdipiqlqasatnf.supabase.co`).
-3. Under **Project API keys**, locate the **`anon` `public`** key. Copy this key (it is client-safe).
+3. Under **Project API keys**, locate the public client key:
+   - In newer Supabase projects, this key is labeled **Publishable key** and begins with `sb_publishable_`.
+   - In older Supabase projects, this key is labeled **`anon` `public`** key and is a JWT beginning with `eyJhbGci...`.
+   - Both formats are client-safe and fully supported by PlanProof AI and `@supabase/supabase-js`.
+   - **CRITICAL SECURITY RULE**: Never copy or configure the **Secret key** (`sb_secret_...`) or **`service_role`** key into `SUPABASE_ANON_KEY`. Secret keys grant administrative backend privileges and must never be exposed to browser clients. PlanProof AI strictly validates and rejects any secret or service-role keys in `SUPABASE_ANON_KEY`.
 4. Locate the **JWT Settings** section (or **Authentication** $\rightarrow$ **JWT Settings** / **Signing Keys** in newer dashboards):
    - **Inspect the Signing Method**:
      - The confirmed staging project uses an **ECC (P-256)** key, which corresponds to **`ES256`** asymmetric signing.
@@ -129,6 +133,7 @@ STORAGE_BACKEND=postgres
 # Supabase Public Parameters (Client-Safe)
 # Project reference: gtolvlwdipiqlqasatnf (matches https://<staging-project-ref>.supabase.co)
 SUPABASE_URL=https://gtolvlwdipiqlqasatnf.supabase.co
+# Public client API key (either new publishable key 'sb_publishable_...' or legacy anon JWT):
 SUPABASE_ANON_KEY=<staging-anon-key>
 
 # Supabase Auth Verification Configuration (ES256 Asymmetric via JWKS)
@@ -151,6 +156,7 @@ MIGRATION_DATABASE_URL=postgresql://postgres.gtolvlwdipiqlqasatnf:<staging-db-pa
 > - Never request, print, or commit passwords, secrets, or `.env` files.
 > - Never print connection strings containing passwords to terminal logs.
 > - `DATABASE_URL` and `MIGRATION_DATABASE_URL` contain passwords and must **never** be shared or committed.
+> - `SUPABASE_ANON_KEY` must contain only the public publishable key (`sb_publishable_...`) or anon key (`eyJ...`). Never put secret keys (`sb_secret_...`) or `service_role` keys in `SUPABASE_ANON_KEY`.
 > - Staging placeholders like `<staging-project-ref>` and `<staging-db-password>` must be replaced in `.env` with real credentials but never committed to version control.
 
 ### Step B.3: Restrict File Permissions and Verify Git Ignore

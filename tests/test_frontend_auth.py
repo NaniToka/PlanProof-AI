@@ -16,8 +16,9 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import jwt
+import pytest
 from fastapi.testclient import TestClient
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 
 from app.auth import create_guest_session_token
 from app.config import Settings
@@ -105,6 +106,36 @@ def test_auth_config_endpoint_when_unconfigured() -> None:
         assert data["configured"] is False
         assert data["supabase_url"] is None
         assert data["supabase_anon_key"] is None
+
+
+def test_auth_config_endpoint_with_publishable_key() -> None:
+    """Verify that /api/v1/auth/config safely exposes new sb_publishable_... keys without leakage."""
+    pub_key = "sb_publishable_demo_xyz987654321"
+    settings = Settings(
+        supabase_url="https://gtolvlwdipiqlqasatnf.supabase.co",
+        supabase_anon_key=SecretStr(pub_key),
+        allow_guest_mode=True,
+        storage_backend="memory",
+    )
+    app = create_app(settings=settings)
+
+    with TestClient(app) as client:
+        res = client.get("/api/v1/auth/config")
+        assert res.status_code == 200
+        data = res.json()
+        assert data["configured"] is True
+        assert data["supabase_url"] == "https://gtolvlwdipiqlqasatnf.supabase.co"
+        assert data["supabase_anon_key"] == pub_key
+
+
+def test_auth_config_endpoint_with_sb_secret_rejected_at_startup() -> None:
+    """Verify that attempting to configure an sb_secret_ key fails validation and prevents startup."""
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(
+            supabase_url="https://gtolvlwdipiqlqasatnf.supabase.co",
+            supabase_anon_key="sb_secret_should_never_leak_123",
+        )
+    assert "sb_secret_" in str(exc_info.value).lower()
 
 
 # ==============================================================================

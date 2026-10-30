@@ -475,5 +475,54 @@ def test_local_dotenv_staging_supabase_configuration_if_present() -> None:
     assert settings.resolved_jwt_issuer == "https://gtolvlwdipiqlqasatnf.supabase.co/auth/v1"
 
 
+def test_supabase_anon_key_accepts_publishable_key_format() -> None:
+    """Verify that newer Supabase publishable key format (sb_publishable_...) is accepted and masked."""
+    pub_key = "sb_publishable_live_example_key_0123456789abcdef"
+    settings = Settings(
+        supabase_url="https://gtolvlwdipiqlqasatnf.supabase.co",
+        supabase_anon_key=pub_key,
+    )
+    assert settings.is_supabase_configured is True
+    assert settings.get_supabase_anon_key_value() == pub_key
+    assert pub_key not in repr(settings)
+    assert pub_key not in str(settings)
+
+
+def test_supabase_anon_key_rejects_sb_secret_key() -> None:
+    """Verify that secret API key (sb_secret_...) is strictly rejected in SUPABASE_ANON_KEY."""
+    secret_key = "sb_secret_admin_master_key_9876543210fedcba"
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(supabase_anon_key=secret_key)
+    err_str = str(exc_info.value).lower()
+    assert "sb_secret_" in err_str
+    assert "client-safe" in err_str or "administrative" in err_str
+
+
+def test_supabase_anon_key_rejects_service_role_keyword_and_jwt() -> None:
+    """Verify that service_role keyword and service_role JWT are rejected in SUPABASE_ANON_KEY."""
+    # Keyword rejection
+    with pytest.raises(ValidationError) as exc_info1:
+        Settings(supabase_anon_key="service_role_secret_token_123")
+    assert "service_role" in str(exc_info1.value).lower()
+
+    # JWT with role: "service_role" rejection
+    import base64
+    import json
+    sr_payload = base64.urlsafe_b64encode(json.dumps({"role": "service_role", "sub": "123"}).encode()).decode().rstrip("=")
+    fake_header = base64.urlsafe_b64encode(json.dumps({"alg": "HS256"}).encode()).decode().rstrip("=")
+    sr_jwt = f"{fake_header}.{sr_payload}.fakesig"
+
+    with pytest.raises(ValidationError) as exc_info2:
+        Settings(supabase_anon_key=sr_jwt)
+    assert "service_role" in str(exc_info2.value).lower()
+
+    # JWT with role: "anon" is accepted
+    anon_payload = base64.urlsafe_b64encode(json.dumps({"role": "anon", "sub": "123"}).encode()).decode().rstrip("=")
+    anon_jwt = f"{fake_header}.{anon_payload}.fakesig"
+    settings = Settings(supabase_anon_key=anon_jwt)
+    assert settings.get_supabase_anon_key_value() == anon_jwt
+
+
+
 
 

@@ -1,5 +1,7 @@
 """Application configuration for PlanProof AI using Pydantic Settings."""
 
+import base64
+import binascii
 import ipaddress
 import json
 import re
@@ -368,6 +370,51 @@ class Settings(BaseSettings):
             ):
                 return None
         return value
+
+    @field_validator("supabase_anon_key")
+    @classmethod
+    def validate_supabase_anon_key(cls, value: SecretStr | None) -> SecretStr | None:
+        """Validate that SUPABASE_ANON_KEY is client-safe and strictly reject secret or service-role keys."""
+        if value is None:
+            return None
+        val_str = value.get_secret_value() if isinstance(value, SecretStr) else str(value)
+        val_str_clean = val_str.strip()
+        if not val_str_clean:
+            return None
+
+        # Check for new Supabase secret key prefix (sb_secret_...)
+        if val_str_clean.lower().startswith("sb_secret_"):
+            raise ValueError(
+                "SUPABASE_ANON_KEY must be a client-safe public key (e.g. 'sb_publishable_...' or legacy anon JWT). "
+                "The secret key ('sb_secret_...') provides administrative backend access and must NEVER be exposed to clients."
+            )
+
+        # Check for service_role identifier/keyword
+        if "service_role" in val_str_clean.lower():
+            raise ValueError(
+                "SUPABASE_ANON_KEY must be a client-safe public key. "
+                "Detected 'service_role' key, which grants administrative privileges and must NEVER be exposed to clients."
+            )
+
+        # Inspect unverified payload if key is in 3-part JWT format
+        parts = val_str_clean.split(".")
+        if len(parts) == 3:
+            payload_json = None
+            try:
+                payload_segment = parts[1]
+                padded = payload_segment + "=" * (-len(payload_segment) % 4)
+                decoded_bytes = base64.urlsafe_b64decode(padded)
+                payload_json = json.loads(decoded_bytes.decode("utf-8"))
+            except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError):
+                pass
+
+            if isinstance(payload_json, dict) and payload_json.get("role") == "service_role":
+                raise ValueError(
+                    "SUPABASE_ANON_KEY must be a client-safe public key. "
+                    "Detected legacy JWT with role 'service_role', which must NEVER be exposed to clients."
+                )
+
+        return value if isinstance(value, SecretStr) else SecretStr(val_str_clean)
 
     @field_validator("supabase_jwt_algorithms", mode="before")
     @classmethod
