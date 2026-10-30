@@ -458,4 +458,22 @@ def test_legitimate_non_placeholder_values_preserved_and_secrets_masked(caplog: 
     assert legit_secret not in log_output
 
 
+def test_local_dotenv_staging_supabase_configuration_if_present() -> None:
+    """Verify that when .env is explicitly loaded, it contains the safe staging configuration."""
+    dotenv_path = Path(".env")
+    if not dotenv_path.exists():
+        pytest.skip(".env file not present in repository root")
+
+    settings = Settings(_env_file=dotenv_path)
+    assert settings.supabase_url == "https://gtolvlwdipiqlqasatnf.supabase.co"
+    assert settings.supabase_jwt_algorithms == ["ES256"]
+    assert settings.supabase_jwt_audience == "authenticated"
+    assert settings.supabase_jwt_secret is None
+    assert settings.database_url is None
+    assert settings.storage_backend == "memory"
+    assert settings.resolved_jwks_url == "https://gtolvlwdipiqlqasatnf.supabase.co/auth/v1/.well-known/jwks.json"
+    assert settings.resolved_jwt_issuer == "https://gtolvlwdipiqlqasatnf.supabase.co/auth/v1"
+
+
+
 

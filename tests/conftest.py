@@ -8,9 +8,13 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from app.config import Settings
 from app.data_loader import REQUIRED_CRISIS_COLUMNS
 from app.main import create_app
 from data.generate_dataset import generate_budget_splits_data, generate_vendor_checklists_data
+
+# Ensure offline tests are isolated from local developer .env file settings
+Settings.model_config["env_file"] = None
 
 
 @pytest.fixture
