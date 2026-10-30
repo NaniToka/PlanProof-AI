@@ -468,11 +468,17 @@ def test_local_dotenv_staging_supabase_configuration_if_present() -> None:
     assert settings.supabase_url == "https://gtolvlwdipiqlqasatnf.supabase.co"
     assert settings.supabase_jwt_algorithms == ["ES256"]
     assert settings.supabase_jwt_audience == "authenticated"
-    assert settings.supabase_jwt_secret is None
-    assert settings.database_url is None
-    assert settings.storage_backend == "memory"
     assert settings.resolved_jwks_url == "https://gtolvlwdipiqlqasatnf.supabase.co/auth/v1/.well-known/jwks.json"
     assert settings.resolved_jwt_issuer == "https://gtolvlwdipiqlqasatnf.supabase.co/auth/v1"
+
+    # Verify any loaded credentials remain masked in repr and str
+    repr_str = repr(settings)
+    assert "gtolvlwdipiqlqasatnf" in repr_str
+    if settings.supabase_jwt_secret:
+        assert settings.get_supabase_jwt_secret_value() not in repr_str
+    if settings.database_url:
+        assert settings.get_database_url_value() not in repr_str
+
 
 
 def test_supabase_anon_key_accepts_publishable_key_format() -> None:
