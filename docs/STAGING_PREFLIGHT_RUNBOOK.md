@@ -361,7 +361,7 @@ Migrations must be applied in strict forward order (`00001` through `00009`). Ea
 | **06** | `migrations/00006_create_crisis_recovery_records.sql` | `public.crisis_recovery_records` | Incident recovery plan logs (JSONB) and action counts |
 | **07** | `migrations/00007_create_crisis_recovery_actions.sql` | `public.crisis_recovery_actions` | Granular action tasks and priority tracking |
 | **08** | `migrations/00008_enable_row_level_security.sql` | All 7 tables | Enable RLS and establish 27 tenant isolation policies |
-| **09** | `migrations/00009_grant_authenticated_role_permissions.sql` | `public` schema | Grant table and sequence permissions to `authenticated` |
+| **09** | `migrations/00009_grant_authenticated_role_permissions.sql` | `public` schema | Grant least-privilege permissions on the seven application tables to `authenticated` |
 
 ---
 

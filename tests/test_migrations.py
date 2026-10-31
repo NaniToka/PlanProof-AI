@@ -185,13 +185,70 @@ def test_no_stub_auth_objects_created_in_migrations() -> None:
 
 
 def test_migration_00009_role_grants_security() -> None:
-    """Verify that migration 00009 grants permissions strictly without granting anon access to private tables."""
+    """Verify that migration 00009 enforces least-privilege explicit table grants for authenticated role."""
     sql = (MIGRATIONS_DIR / "00009_grant_authenticated_role_permissions.sql").read_text(encoding="utf-8")
     assert "TO authenticated" in sql
-    # Anon should NOT be granted SELECT on all tables
-    assert not re.search(r"GRANT\s+SELECT\s+ON\s+ALL\s+TABLES\s+IN\s+SCHEMA\s+public\s+TO\s+anon\b", sql, re.IGNORECASE), (
-        "Migration 00009 must not grant SELECT on all tables to anon"
+
+    # Anon should NOT be granted table access
+    assert not re.search(r"GRANT\s+.*?\s+ON\s+(?:TABLE\s+|ALL\s+TABLES\s+).*?TO\s+anon\b", sql, re.IGNORECASE), (
+        "Migration 00009 must not grant table access to anon"
     )
+
+    # Broad 'ON ALL TABLES IN SCHEMA public' is forbidden in favor of least-privilege explicit table grants
+    assert not re.search(r"GRANT\s+.*?\s+ON\s+ALL\s+TABLES\s+IN\s+SCHEMA\s+public", sql, re.IGNORECASE), (
+        "Migration 00009 must not use broad 'ON ALL TABLES IN SCHEMA public'; explicit tables required"
+    )
+
+    # Broad or unnecessary sequence grants are forbidden (all 7 tables use UUID or slug PKs)
+    assert not re.search(r"GRANT\s+.*?\s+ON\s+ALL\s+SEQUENCES", sql, re.IGNORECASE), (
+        "Migration 00009 must not contain unnecessary 'ON ALL SEQUENCES' grants"
+    )
+
+    # Exactly the 7 PlanProof AI application tables must be explicitly granted
+    expected_tables = [
+        "public.profiles",
+        "public.events",
+        "public.event_budgets",
+        "public.event_milestone_statuses",
+        "public.event_vendor_checklist_items",
+        "public.crisis_recovery_records",
+        "public.crisis_recovery_actions",
+    ]
+    for table in expected_tables:
+        assert table in sql, f"Migration 00009 must explicitly grant permissions on {table}"
+
+
+def test_migration_00009_down_migration_least_privilege_and_symmetrical() -> None:
+    """Verify that down migration 00009 symmetrically revokes permissions only from the 7 application tables."""
+    down_sql = (DOWN_MIGRATIONS_DIR / "00009_revoke_authenticated_role_permissions.sql").read_text(encoding="utf-8")
+
+    # Broad 'ON ALL TABLES IN SCHEMA public' is forbidden on rollback
+    assert not re.search(r"REVOKE\s+.*?\s+ON\s+ALL\s+TABLES\s+IN\s+SCHEMA\s+public", down_sql, re.IGNORECASE), (
+        "Down migration 00009 must not use broad 'ON ALL TABLES IN SCHEMA public'"
+    )
+
+    # Symmetrically targets all 7 application tables
+    expected_tables = [
+        "public.profiles",
+        "public.events",
+        "public.event_budgets",
+        "public.event_milestone_statuses",
+        "public.event_vendor_checklist_items",
+        "public.crisis_recovery_records",
+        "public.crisis_recovery_actions",
+    ]
+    for table in expected_tables:
+        assert table in down_sql, f"Down migration 00009 must explicitly revoke permissions on {table}"
+
+    # Does not revoke pre-existing Supabase default USAGE on schema public
+    assert not re.search(r"REVOKE\s+USAGE\s+ON\s+SCHEMA\s+public\s+FROM", down_sql, re.IGNORECASE), (
+        "Down migration 00009 must not revoke schema USAGE, which is pre-configured by Supabase"
+    )
+
+    # Does not touch or modify Supabase-managed schemas or tables
+    for managed_schema in ["auth.", "storage.", "realtime.", "vault."]:
+        assert managed_schema not in down_sql.lower(), f"Down migration must not touch {managed_schema}"
+
 
 
 def test_handle_new_user_security_definer_and_search_path() -> None:
