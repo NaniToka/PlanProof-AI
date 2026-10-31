@@ -309,8 +309,8 @@ def test_no_ascending_rollback_in_documentation() -> None:
         "README.md must not instruct executing down migrations via an ascending shell glob"
     )
 
-    # Down migrations must be documented in reverse order (00010/00009 down to 00001)
-    assert "00010 down to 00001" in readme_text or "00009 down to 00001" in readme_text or "ls -r migrations/down" in readme_text, (
+    # Down migrations must be documented in reverse order (00011/00010/00009 down to 00001)
+    assert "00011 down to 00001" in readme_text or "00010 down to 00001" in readme_text or "00009 down to 00001" in readme_text or "ls -r migrations/down" in readme_text, (
         "README.md must instruct executing down migrations in reverse dependency order"
     )
 
@@ -672,6 +672,95 @@ def test_step_7e_catalog_audit_confirms_no_global_defaults_and_no_public_grants(
     for tbl, info in data.get("table_privileges", {}).items():
         relacl = info.get("relacl", "")
         assert not (",=" in relacl or relacl.startswith("{=")), f"Table public.{tbl} has unexpected PUBLIC grant: {relacl}"
+
+
+def test_migration_00011_revoke_maintain_structure_and_scope() -> None:
+    """Verify that migration 00011 explicitly revokes MAINTAIN from authenticated on all seven application tables."""
+    sql = (MIGRATIONS_DIR / "00011_revoke_authenticated_maintain.sql").read_text(encoding="utf-8")
+
+    # 1. Targets all seven domain tables
+    for table in REQUIRED_TABLES:
+        assert f"public.{table}" in sql, f"Migration 00011 must explicitly target public.{table}"
+
+    # 2. Revokes MAINTAIN from authenticated
+    assert re.search(
+        r"REVOKE\s+MAINTAIN\s+ON\s+TABLE\s+.*?\s+FROM\s+authenticated\b",
+        sql,
+        re.IGNORECASE | re.DOTALL,
+    ), "Migration 00011 must execute REVOKE MAINTAIN ON TABLE ... FROM authenticated"
+
+    # 3. Authenticated preserves CRUD: SELECT, INSERT, UPDATE, DELETE are NOT revoked
+    assert not re.search(
+        r"REVOKE\s+.*?\b(?:SELECT|INSERT|UPDATE|DELETE)\b.*?\s+FROM\s+authenticated\b",
+        sql,
+        re.IGNORECASE,
+    ), "Migration 00011 must preserve SELECT, INSERT, UPDATE, DELETE for authenticated"
+
+    # 4. Administrative roles and anon/PUBLIC are not modified
+    for role in ["anon", "public", "service_role", "postgres", "supabase_admin"]:
+        assert not re.search(rf"REVOKE\s+.*?\s+FROM\s+{role}\b", sql, re.IGNORECASE), (
+            f"Migration 00011 must not modify privileges for {role}"
+        )
+
+    # 5. Does not touch or modify Supabase-managed schemas or tables
+    for managed_schema in ["auth.", "storage.", "realtime.", "vault."]:
+        assert managed_schema not in sql.lower(), f"Migration 00011 must not touch {managed_schema}"
+
+
+def test_migration_00011_default_privileges_revoke_maintain() -> None:
+    """Verify that migration 00011 revokes MAINTAIN from future table default privileges for role postgres in schema public."""
+    sql = (MIGRATIONS_DIR / "00011_revoke_authenticated_maintain.sql").read_text(encoding="utf-8")
+
+    # 1. Hardens default privileges for role postgres in schema public
+    assert re.search(
+        r"ALTER\s+DEFAULT\s+PRIVILEGES\s+FOR\s+ROLE\s+postgres\s+IN\s+SCHEMA\s+public\s+REVOKE\s+MAINTAIN\s+ON\s+TABLES\s+FROM\s+authenticated\b",
+        sql,
+        re.IGNORECASE,
+    ), "Migration 00011 must revoke default MAINTAIN on tables from authenticated for role postgres in schema public"
+
+    # 2. Strictly scoped to IN SCHEMA public
+    alter_matches = re.findall(r"ALTER\s+DEFAULT\s+PRIVILEGES\s+(.*?);", sql, re.IGNORECASE | re.DOTALL)
+    assert len(alter_matches) == 1, f"Expected exactly 1 ALTER DEFAULT PRIVILEGES statement, found {len(alter_matches)}"
+    for match in alter_matches:
+        assert "IN SCHEMA public" in match, "ALTER DEFAULT PRIVILEGES must be strictly scoped to 'IN SCHEMA public'"
+        assert "FOR ROLE postgres" in match, "ALTER DEFAULT PRIVILEGES must specify 'FOR ROLE postgres'"
+
+
+def test_migration_00011_down_migration_safety_guard() -> None:
+    """Verify that down migration 00011 fails closed and requires explicit manual security review."""
+    down_sql = (DOWN_MIGRATIONS_DIR / "00011_rollback_revoke_maintain.sql").read_text(encoding="utf-8")
+
+    # Must fail closed with RAISE EXCEPTION
+    assert "RAISE EXCEPTION" in down_sql, "Down migration 00011 must fail closed with RAISE EXCEPTION"
+    assert "Manual security authorization is required" in down_sql
+
+    # Must NOT execute un-guarded GRANT statements to authenticated
+    executed_statements = [
+        line.strip() for line in down_sql.splitlines()
+        if not line.strip().startswith("--") and line.strip()
+    ]
+    non_guarded_sql = "\n".join(executed_statements)
+    assert not re.search(r"^\s*GRANT\s+MAINTAIN\b", non_guarded_sql, re.MULTILINE | re.IGNORECASE), (
+        "Down migration 00011 must not execute un-guarded GRANT MAINTAIN statements"
+    )
+
+
+def test_migration_00010_and_rls_preservation_with_00011() -> None:
+    """Verify that migration 00011 does not tamper with RLS status, existing policies, or migration 00010."""
+    sql_00011 = (MIGRATIONS_DIR / "00011_revoke_authenticated_maintain.sql").read_text(encoding="utf-8")
+    sql_00010 = (MIGRATIONS_DIR / "00010_harden_least_privilege_acls.sql").read_text(encoding="utf-8")
+
+    # 00011 does not touch RLS
+    assert "DISABLE ROW LEVEL SECURITY" not in sql_00011.upper(), "Migration 00011 must not disable RLS"
+    assert "DROP POLICY" not in sql_00011.upper(), "Migration 00011 must not drop any RLS policies"
+    assert "CREATE POLICY" not in sql_00011.upper(), "Migration 00011 must not create or replace RLS policies"
+
+    # 00010 remains intact with its preflight guard and revocations
+    assert "DO $$" in sql_00010
+    assert "defaclnamespace = 0" in sql_00010
+    assert "REVOKE ALL ON TABLE" in sql_00010
+    assert "FROM anon, PUBLIC" in sql_00010
+
 
 
 
