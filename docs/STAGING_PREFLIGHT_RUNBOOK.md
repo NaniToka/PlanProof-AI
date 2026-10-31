@@ -347,7 +347,7 @@ echo "Backup validated: ${BACKUP_FILE} exists, is non-empty ($(du -h "$BACKUP_FI
 
 ### Section C.4: Sequential Migration Execution (Per-File Transaction Safety)
 
-Migrations must be applied in strict forward order (`00001` through `00009`). Each migration file is wrapped in an individual transaction using `--single-transaction` (`psql -1`) together with `-v ON_ERROR_STOP=1`.
+Migrations must be applied in strict forward order (`00001` through `00010`). Each migration file is wrapped in an individual transaction using `--single-transaction` (`psql -1`) together with `-v ON_ERROR_STOP=1`.
 
 #### Migration Sequence & File Roster
 
@@ -362,6 +362,7 @@ Migrations must be applied in strict forward order (`00001` through `00009`). Ea
 | **07** | `migrations/00007_create_crisis_recovery_actions.sql` | `public.crisis_recovery_actions` | Granular action tasks and priority tracking |
 | **08** | `migrations/00008_enable_row_level_security.sql` | All 7 tables | Enable RLS and establish 27 tenant isolation policies |
 | **09** | `migrations/00009_grant_authenticated_role_permissions.sql` | `public` schema | Grant least-privilege permissions on the seven application tables to `authenticated` |
+| **10** | `migrations/00010_harden_least_privilege_acls.sql` | All 7 tables & `public` schema | Harden table DACs and future-table default privileges (`pg_default_acl`) |
 
 ---
 
@@ -417,15 +418,15 @@ WHERE n.nspname = 'auth'
 > - **Catalog Visibility != Functional Proof**: Visibility of the trigger in `pg_trigger` confirms registration in PostgreSQL catalogs. It does **not** prove that GoTrue has execution permissions, that the payload mapping works, or that profile provisioning succeeds during live signup.
 > - **Supabase-Managed Object Boundary**: In Supabase, `auth.users` is owned and managed by GoTrue / `supabase_auth_admin`. Standard migration roles (such as `postgres` or application roles) cannot grant privileges on or modify Supabase-managed authentication internals.
 > - **Stop Condition**: If `00001_create_profiles.sql` fails to create the trigger (raising `insufficient_privilege`) or if the catalog query returns 0 rows or `tgenabled != 'O'`:
->   1. **HALT IMMEDIATELY**. Do not apply migrations `00002` through `00009`.
+>   1. **HALT IMMEDIATELY**. Do not apply migrations `00002` through `00010`.
 >   2. **DO NOT attempt to bypass Supabase security boundaries** or alter `auth` schema ownership.
 >   3. **Escalate to the Supabase Project Owner**: Have an administrator inspect the trigger setup via the official Supabase Dashboard SQL Editor (running under `supabase_admin`).
 
 ---
 
-#### Step 3: Apply Migrations 00002 Through 00009
+#### Step 3: Apply Migrations 00002 Through 00010
 ```bash
-for file in migrations/0000[2-9]*.sql; do
+for file in migrations/0000[2-9]*.sql migrations/00010*.sql; do
     if [ ! -f "$file" ]; then
         echo "ERROR: Migration file $file not found!"
         exit 1
@@ -444,7 +445,7 @@ done
 #### Stop Conditions & Partial-Failure Recovery Protocol
 If any migration file fails mid-run:
 1. **HALT IMMEDIATELY**: Do not re-run all scripts blindly.
-2. **DO NOT RUN DOWN SCRIPTS**: Rollback scripts in `migrations/down/` contain destructive `DROP TABLE ... CASCADE` statements.
+2. **DO NOT RUN DOWN SCRIPTS**: Rollback scripts in `migrations/down/` contain destructive `DROP TABLE ... CASCADE` statements, and down migration `00010` is explicitly guarded against unattended execution.
 3. **Inspect Completed Migrations**:
    ```sql
    SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename;
@@ -452,7 +453,7 @@ If any migration file fails mid-run:
 4. **Identify the Clean Boundary**:
    Because each file ran under `--single-transaction`, the failed file rolled back cleanly. The database state matches the end of the last successful file.
 5. **Diagnose and Fix**: Review the terminal error message (e.g. syntax, lock timeout, constraint violation). Correct the root cause.
-6. **Resume Forward Migration**: Re-run the migration loop starting strictly at the failing file through `00009`.
+6. **Resume Forward Migration**: Re-run the migration loop starting strictly at the failing file through `00010`.
 
 ---
 
@@ -717,7 +718,7 @@ If performing teardown programmatically via a release workstation:
 | **Backup** | `pg_dump` fails, file missing/empty, or `pg_restore --list` fails | **ABORT**. Do not run migrations without a validated backup. |
 | **Migration 00001** | `psql` fails with trigger error on `auth.users` | **HALT**. Role lacks permissions on `auth` schema. Do NOT bypass; escalate to Supabase Project Owner. |
 | **Trigger Gate** | `on_auth_user_created` missing or disabled in catalog | **HALT**. Do not proceed to `00002`. Investigate trigger setup with Project Owner. |
-| **Migrations 00002–00009** | Any file throws error | **HALT**. File rolled back automatically via `--single-transaction`. Diagnose and resume forward. |
+| **Migrations 00002–00010** | Any file throws error | **HALT**. File rolled back automatically via `--single-transaction`. Diagnose and resume forward. |
 | **Functional Signup** | Profile row not created in `public.profiles` | **HALT**. GoTrue trigger hook is not firing despite catalog entry. |
 | **Tenant Isolation** | Tenant B receives `200` accessing Tenant A's event | **CRITICAL SECURITY ALERT**. RLS policy is non-functional. Disable traffic. |
 | **Cleanup** | Exact user IDs not recorded or mismatch | **HALT**. Do not run broad deletion queries. Clean via Supabase Dashboard. |

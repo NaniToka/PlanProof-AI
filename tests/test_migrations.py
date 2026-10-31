@@ -309,8 +309,8 @@ def test_no_ascending_rollback_in_documentation() -> None:
         "README.md must not instruct executing down migrations via an ascending shell glob"
     )
 
-    # Down migrations must be documented in reverse order (00009 down to 00001)
-    assert "00009 down to 00001" in readme_text or "ls -r migrations/down" in readme_text, (
+    # Down migrations must be documented in reverse order (00010/00009 down to 00001)
+    assert "00010 down to 00001" in readme_text or "00009 down to 00001" in readme_text or "ls -r migrations/down" in readme_text, (
         "README.md must instruct executing down migrations in reverse dependency order"
     )
 
@@ -547,6 +547,99 @@ def test_staging_runbook_three_phases_and_beginner_guidance() -> None:
     # Phase C: clearly separates offline preflight checks from live preflight
     assert "Offline Preflight Verification" in text or "offline" in text.lower()
     assert "pytest" in text
+
+
+def test_migration_00010_acl_hardening_structure_and_scope() -> None:
+    """Verify that migration 00010 revokes all privileges from anon and removes dangerous privileges from authenticated."""
+    sql = (MIGRATIONS_DIR / "00010_harden_least_privilege_acls.sql").read_text(encoding="utf-8")
+
+    # 1. Targets all seven domain tables for revoking from anon
+    for table in REQUIRED_TABLES:
+        assert f"public.{table}" in sql, f"Migration 00010 must explicitly target public.{table}"
+
+    # 2. Anon has ALL table privileges revoked
+    assert re.search(r"REVOKE\s+ALL\s+ON\s+TABLE\s+.*?\s+FROM\s+anon\b", sql, re.IGNORECASE | re.DOTALL), (
+        "Migration 00010 must execute REVOKE ALL ON TABLE ... FROM anon"
+    )
+
+    # 3. Authenticated has TRUNCATE, REFERENCES, TRIGGER revoked
+    assert re.search(
+        r"REVOKE\s+TRUNCATE,\s*REFERENCES,\s*TRIGGER\s+ON\s+TABLE\s+.*?\s+FROM\s+authenticated\b",
+        sql,
+        re.IGNORECASE | re.DOTALL,
+    ), "Migration 00010 must revoke TRUNCATE, REFERENCES, TRIGGER from authenticated"
+
+    # 4. Authenticated retains CRUD: SELECT, INSERT, UPDATE, DELETE are NOT revoked
+    assert not re.search(
+        r"REVOKE\s+.*?\b(?:SELECT|INSERT|UPDATE|DELETE)\b.*?\s+FROM\s+authenticated\b",
+        sql,
+        re.IGNORECASE,
+    ), "Migration 00010 must preserve SELECT, INSERT, UPDATE, DELETE for authenticated"
+
+    # 5. Service role and postgres administrative privileges are not revoked
+    for role in ["service_role", "postgres", "supabase_admin"]:
+        assert not re.search(rf"REVOKE\s+.*?\s+FROM\s+{role}\b", sql, re.IGNORECASE), (
+            f"Migration 00010 must not revoke privileges from administrative role {role}"
+        )
+
+    # 6. Does not touch or modify Supabase-managed schemas or tables
+    for managed_schema in ["auth.", "storage.", "realtime.", "vault."]:
+        assert managed_schema not in sql.lower(), f"Migration 00010 must not touch {managed_schema}"
+
+
+def test_migration_00010_default_privileges_hardening() -> None:
+    """Verify that migration 00010 hardens default privileges in pg_default_acl for future tables created by postgres in public."""
+    sql = (MIGRATIONS_DIR / "00010_harden_least_privilege_acls.sql").read_text(encoding="utf-8")
+
+    # 1. Hardens default privileges for role postgres in schema public for anon
+    assert re.search(
+        r"ALTER\s+DEFAULT\s+PRIVILEGES\s+FOR\s+ROLE\s+postgres\s+IN\s+SCHEMA\s+public\s+REVOKE\s+ALL\s+ON\s+TABLES\s+FROM\s+anon\b",
+        sql,
+        re.IGNORECASE,
+    ), "Migration 00010 must revoke default table privileges from anon for role postgres in schema public"
+
+    # 2. Hardens default privileges for role postgres in schema public for authenticated
+    assert re.search(
+        r"ALTER\s+DEFAULT\s+PRIVILEGES\s+FOR\s+ROLE\s+postgres\s+IN\s+SCHEMA\s+public\s+REVOKE\s+TRUNCATE,\s*REFERENCES,\s*TRIGGER\s+ON\s+TABLES\s+FROM\s+authenticated\b",
+        sql,
+        re.IGNORECASE,
+    ), "Migration 00010 must revoke default TRUNCATE, REFERENCES, TRIGGER on tables from authenticated"
+
+    # 3. Strictly scoped to IN SCHEMA public (does not affect global or other schemas)
+    alter_matches = re.findall(r"ALTER\s+DEFAULT\s+PRIVILEGES\s+(.*?);", sql, re.IGNORECASE | re.DOTALL)
+    assert len(alter_matches) == 2, f"Expected exactly 2 ALTER DEFAULT PRIVILEGES statements, found {len(alter_matches)}"
+    for match in alter_matches:
+        assert "IN SCHEMA public" in match, "ALTER DEFAULT PRIVILEGES must be strictly scoped to 'IN SCHEMA public'"
+        assert "FOR ROLE postgres" in match, "ALTER DEFAULT PRIVILEGES must specify 'FOR ROLE postgres'"
+
+
+def test_migration_00010_down_migration_safety_guard() -> None:
+    """Verify that down migration 00010 fails closed and requires explicit manual security review."""
+    down_sql = (DOWN_MIGRATIONS_DIR / "00010_rollback_acl_hardening.sql").read_text(encoding="utf-8")
+
+    # Must fail closed with RAISE EXCEPTION
+    assert "RAISE EXCEPTION" in down_sql, "Down migration 00010 must fail closed with RAISE EXCEPTION"
+    assert "Manual security authorization is required" in down_sql
+
+    # Must NOT execute un-guarded GRANT statements to anon
+    executed_statements = [
+        line.strip() for line in down_sql.splitlines()
+        if not line.strip().startswith("--") and line.strip()
+    ]
+    non_guarded_sql = "\n".join(executed_statements)
+    assert not re.search(r"^\s*GRANT\s+.*?\s+TO\s+anon\b", non_guarded_sql, re.MULTILINE | re.IGNORECASE), (
+        "Down migration 00010 must not execute un-guarded GRANT statements to anon"
+    )
+
+
+def test_rls_policies_and_enablement_preserved_in_00010() -> None:
+    """Verify that migration 00010 does not tamper with RLS status or existing policies."""
+    sql = (MIGRATIONS_DIR / "00010_harden_least_privilege_acls.sql").read_text(encoding="utf-8")
+
+    assert "DISABLE ROW LEVEL SECURITY" not in sql.upper(), "Migration 00010 must not disable RLS"
+    assert "DROP POLICY" not in sql.upper(), "Migration 00010 must not drop any RLS policies"
+    assert "CREATE POLICY" not in sql.upper(), "Migration 00010 must not create or replace RLS policies"
+
 
 
 

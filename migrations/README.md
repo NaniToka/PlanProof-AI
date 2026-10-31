@@ -24,18 +24,20 @@ Migrations are numbered sequentially and must be applied in the following depend
 | **07** | [`00007_create_crisis_recovery_actions.sql`](./00007_create_crisis_recovery_actions.sql) | Granular actionable recovery steps and execution notes | `public.crisis_recovery_actions` |
 | **08** | [`00008_enable_row_level_security.sql`](./00008_enable_row_level_security.sql) | Enable RLS and multi-tenant isolation policies | All 7 tables |
 | **09** | [`00009_grant_authenticated_role_permissions.sql`](./00009_grant_authenticated_role_permissions.sql) | Grant authenticated role schema and table permissions | `public` schema |
+| **10** | [`00010_harden_least_privilege_acls.sql`](./00010_harden_least_privilege_acls.sql) | Harden table and default ACLs (least privilege) | All 7 tables & `public` schema |
 
 ### Rollback / Down Migrations (Disposable Test Environments Only)
-Symmetrical reversal scripts are located in [`migrations/down/`](./down/) and **must strictly be executed in reverse order (`00009` down to `00001`)**:
-1. [`00009_revoke_authenticated_role_permissions.sql`](./down/00009_revoke_authenticated_role_permissions.sql)
-2. [`00008_disable_row_level_security.sql`](./down/00008_disable_row_level_security.sql)
-3. [`00007_drop_crisis_recovery_actions.sql`](./down/00007_drop_crisis_recovery_actions.sql)
-4. [`00006_drop_crisis_recovery_records.sql`](./down/00006_drop_crisis_recovery_records.sql)
-5. [`00005_drop_event_vendor_checklist_items.sql`](./down/00005_drop_event_vendor_checklist_items.sql)
-6. [`00004_drop_event_milestone_statuses.sql`](./down/00004_drop_event_milestone_statuses.sql)
-7. [`00003_drop_event_budgets.sql`](./down/00003_drop_event_budgets.sql)
-8. [`00002_drop_events.sql`](./down/00002_drop_events.sql)
-9. [`00001_drop_profiles.sql`](./down/00001_drop_profiles.sql)
+Symmetrical reversal scripts are located in [`migrations/down/`](./down/) and **must strictly be executed in reverse order (`00010` down to `00001`)**:
+1. [`00010_rollback_acl_hardening.sql`](./down/00010_rollback_acl_hardening.sql) *(Guarded: requires manual security authorization)*
+2. [`00009_revoke_authenticated_role_permissions.sql`](./down/00009_revoke_authenticated_role_permissions.sql)
+3. [`00008_disable_row_level_security.sql`](./down/00008_disable_row_level_security.sql)
+4. [`00007_drop_crisis_recovery_actions.sql`](./down/00007_drop_crisis_recovery_actions.sql)
+5. [`00006_drop_crisis_recovery_records.sql`](./down/00006_drop_crisis_recovery_records.sql)
+6. [`00005_drop_event_vendor_checklist_items.sql`](./down/00005_drop_event_vendor_checklist_items.sql)
+7. [`00004_drop_event_milestone_statuses.sql`](./down/00004_drop_event_milestone_statuses.sql)
+8. [`00003_drop_event_budgets.sql`](./down/00003_drop_event_budgets.sql)
+9. [`00002_drop_events.sql`](./down/00002_drop_events.sql)
+10. [`00001_drop_profiles.sql`](./down/00001_drop_profiles.sql)
 
 ---
 
@@ -75,7 +77,7 @@ supabase db push
 # Export direct/session connection URL (Port 5432 - NEVER use transaction pooler 6543 for DDL)
 export MIGRATION_DATABASE_URL="postgresql://postgres.<project-ref>:<db-password>@<direct-host-or-session-pooler>:5432/postgres"
 
-# Apply sequentially (00001 through 00009) in strict forward order with per-file transaction safety
+# Apply sequentially (00001 through 00010) in strict forward order with per-file transaction safety
 for file in $(ls migrations/000*.sql | sort); do
     echo "Applying $file with transaction safety..."
     psql "$MIGRATION_DATABASE_URL" -v ON_ERROR_STOP=1 --single-transaction -f "$file"
@@ -87,7 +89,7 @@ done
 > Each migration file is executed inside its own transaction boundary via `--single-transaction` (`psql -1`). If a statement inside a file fails, that entire file rolls back cleanly and `-v ON_ERROR_STOP=1` immediately halts the loop. Note that migrations do **not** run as a single global transaction across files: any migration files that completed before the failure remain committed and applied.
 
 ### Option C: Using Supabase Dashboard SQL Editor
-Copy and paste the contents of files `00001` through `00009` sequentially into the SQL Editor in your Supabase project dashboard and click **Run**.
+Copy and paste the contents of files `00001` through `00010` sequentially into the SQL Editor in your Supabase project dashboard and click **Run**.
 
 ---
 
@@ -193,15 +195,15 @@ If a migration fails mid-sequence (e.g., at file `00004`):
 2. **Inspect Current State**: Run verification queries in Section 4 to determine which migration files completed successfully.
 3. **Diagnose the Failure**: Review the error log from the failed migration file. Because `--single-transaction` was used, the failed file was completely rolled back, leaving the database at the clean boundary of the previous successful migration.
 4. **Resolve the Underlying Cause**: Fix permissions, resolve locks, or adjust environment settings.
-5. **Resume Forward Migration**: Re-run migrations starting strictly from the failed migration file through `00009`.
+5. **Resume Forward Migration**: Re-run migrations starting strictly from the failed migration file through `00010`.
 
 ### Disposable / Test Database Teardown Only
 
-If tearing down a disposable local test database where data loss is expected and acceptable, down migrations must be executed in **strict reverse order** (`00009` down to `00001`) to respect foreign-key dependencies:
+If tearing down a disposable local test database where data loss is expected and acceptable, down migrations must be executed in **strict reverse order** (`00010` down to `00001`) to respect foreign-key dependencies:
 
 ```bash
 # DISPOSABLE TEST DATABASES ONLY - NEVER RUN IN PRODUCTION
-# Execute strictly in reverse order (00009 down to 00001)
+# Execute strictly in reverse order (00010 down to 00001)
 for file in $(ls -r migrations/down/000*.sql); do
     echo "Reverting $file with transaction safety..."
     psql "$MIGRATION_DATABASE_URL" -v ON_ERROR_STOP=1 --single-transaction -f "$file"
