@@ -550,16 +550,16 @@ def test_staging_runbook_three_phases_and_beginner_guidance() -> None:
 
 
 def test_migration_00010_acl_hardening_structure_and_scope() -> None:
-    """Verify that migration 00010 revokes all privileges from anon and removes dangerous privileges from authenticated."""
+    """Verify that migration 00010 revokes all privileges from anon and PUBLIC and removes dangerous privileges from authenticated."""
     sql = (MIGRATIONS_DIR / "00010_harden_least_privilege_acls.sql").read_text(encoding="utf-8")
 
-    # 1. Targets all seven domain tables for revoking from anon
+    # 1. Targets all seven domain tables for revoking from anon and PUBLIC
     for table in REQUIRED_TABLES:
         assert f"public.{table}" in sql, f"Migration 00010 must explicitly target public.{table}"
 
-    # 2. Anon has ALL table privileges revoked
-    assert re.search(r"REVOKE\s+ALL\s+ON\s+TABLE\s+.*?\s+FROM\s+anon\b", sql, re.IGNORECASE | re.DOTALL), (
-        "Migration 00010 must execute REVOKE ALL ON TABLE ... FROM anon"
+    # 2. Both anon and the PUBLIC pseudo-role have ALL table privileges revoked
+    assert re.search(r"REVOKE\s+ALL\s+ON\s+TABLE\s+.*?\s+FROM\s+(?:anon,\s*PUBLIC|PUBLIC,\s*anon)\b", sql, re.IGNORECASE | re.DOTALL), (
+        "Migration 00010 must execute REVOKE ALL ON TABLE ... FROM anon, PUBLIC"
     )
 
     # 3. Authenticated has TRUNCATE, REFERENCES, TRIGGER revoked
@@ -591,12 +591,12 @@ def test_migration_00010_default_privileges_hardening() -> None:
     """Verify that migration 00010 hardens default privileges in pg_default_acl for future tables created by postgres in public."""
     sql = (MIGRATIONS_DIR / "00010_harden_least_privilege_acls.sql").read_text(encoding="utf-8")
 
-    # 1. Hardens default privileges for role postgres in schema public for anon
+    # 1. Hardens default privileges for role postgres in schema public for anon and PUBLIC
     assert re.search(
-        r"ALTER\s+DEFAULT\s+PRIVILEGES\s+FOR\s+ROLE\s+postgres\s+IN\s+SCHEMA\s+public\s+REVOKE\s+ALL\s+ON\s+TABLES\s+FROM\s+anon\b",
+        r"ALTER\s+DEFAULT\s+PRIVILEGES\s+FOR\s+ROLE\s+postgres\s+IN\s+SCHEMA\s+public\s+REVOKE\s+ALL\s+ON\s+TABLES\s+FROM\s+(?:anon,\s*PUBLIC|PUBLIC,\s*anon)\b",
         sql,
         re.IGNORECASE,
-    ), "Migration 00010 must revoke default table privileges from anon for role postgres in schema public"
+    ), "Migration 00010 must revoke default table privileges from anon and PUBLIC for role postgres in schema public"
 
     # 2. Hardens default privileges for role postgres in schema public for authenticated
     assert re.search(
@@ -613,6 +613,19 @@ def test_migration_00010_default_privileges_hardening() -> None:
         assert "FOR ROLE postgres" in match, "ALTER DEFAULT PRIVILEGES must specify 'FOR ROLE postgres'"
 
 
+def test_migration_00010_global_defaults_fail_closed_preflight_guard() -> None:
+    """Verify migration 00010 includes a fail-closed preflight guard checking for unsafe global default privileges."""
+    sql = (MIGRATIONS_DIR / "00010_harden_least_privilege_acls.sql").read_text(encoding="utf-8")
+
+    # Must contain PL/pgSQL DO block with preflight validation
+    assert "DO $$" in sql
+    assert "pg_default_acl" in sql
+    assert "defaclnamespace = 0" in sql
+    assert "aclexplode" in sql
+    assert "RAISE EXCEPTION" in sql
+    assert "unsafe_global_count" in sql or "SAFETY HALT" in sql
+
+
 def test_migration_00010_down_migration_safety_guard() -> None:
     """Verify that down migration 00010 fails closed and requires explicit manual security review."""
     down_sql = (DOWN_MIGRATIONS_DIR / "00010_rollback_acl_hardening.sql").read_text(encoding="utf-8")
@@ -621,14 +634,14 @@ def test_migration_00010_down_migration_safety_guard() -> None:
     assert "RAISE EXCEPTION" in down_sql, "Down migration 00010 must fail closed with RAISE EXCEPTION"
     assert "Manual security authorization is required" in down_sql
 
-    # Must NOT execute un-guarded GRANT statements to anon
+    # Must NOT execute un-guarded GRANT statements to anon or PUBLIC
     executed_statements = [
         line.strip() for line in down_sql.splitlines()
         if not line.strip().startswith("--") and line.strip()
     ]
     non_guarded_sql = "\n".join(executed_statements)
-    assert not re.search(r"^\s*GRANT\s+.*?\s+TO\s+anon\b", non_guarded_sql, re.MULTILINE | re.IGNORECASE), (
-        "Down migration 00010 must not execute un-guarded GRANT statements to anon"
+    assert not re.search(r"^\s*GRANT\s+.*?\s+TO\s+(?:anon|PUBLIC)\b", non_guarded_sql, re.MULTILINE | re.IGNORECASE), (
+        "Down migration 00010 must not execute un-guarded GRANT statements to anon or PUBLIC"
     )
 
 
@@ -639,6 +652,26 @@ def test_rls_policies_and_enablement_preserved_in_00010() -> None:
     assert "DISABLE ROW LEVEL SECURITY" not in sql.upper(), "Migration 00010 must not disable RLS"
     assert "DROP POLICY" not in sql.upper(), "Migration 00010 must not drop any RLS policies"
     assert "CREATE POLICY" not in sql.upper(), "Migration 00010 must not create or replace RLS policies"
+
+
+def test_step_7e_catalog_audit_confirms_no_global_defaults_and_no_public_grants() -> None:
+    """Verify via Step 7E recorded catalog audit that no global defaults or PUBLIC table grants exist on staging."""
+    import json
+    audit_file = Path("/Users/tokanani/.gemini/antigravity/brain/d9b199cd-48fd-4563-b681-ae0c06b06497/scratch/audit_step_7e_results.json")
+    if not audit_file.exists():
+        pytest.skip("Step 7E audit results not present on local machine")
+
+    with open(audit_file, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    # 1. No global default ACLs exist on staging
+    global_defaults = [d for d in data.get("default_acls", []) if d.get("schema") == "(all schemas)"]
+    assert len(global_defaults) == 0, f"Expected 0 global default ACLs, found: {global_defaults}"
+
+    # 2. No PUBLIC grants on existing table ACLs
+    for tbl, info in data.get("table_privileges", {}).items():
+        relacl = info.get("relacl", "")
+        assert not (",=" in relacl or relacl.startswith("{=")), f"Table public.{tbl} has unexpected PUBLIC grant: {relacl}"
 
 
 

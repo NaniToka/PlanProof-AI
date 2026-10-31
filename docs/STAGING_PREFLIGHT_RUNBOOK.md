@@ -503,16 +503,23 @@ SELECT
     table_name,
     has_table_privilege('anon', 'public.' || table_name, 'SELECT') AS anon_select,
     has_table_privilege('anon', 'public.' || table_name, 'INSERT') AS anon_insert,
+    has_table_privilege('PUBLIC', 'public.' || table_name, 'SELECT') AS public_select,
     has_table_privilege('authenticated', 'public.' || table_name, 'SELECT') AS auth_select,
-    has_table_privilege('authenticated', 'public.' || table_name, 'INSERT') AS auth_insert
+    has_table_privilege('authenticated', 'public.' || table_name, 'INSERT') AS auth_insert,
+    has_table_privilege('authenticated', 'public.' || table_name, 'TRUNCATE') AS auth_truncate
 FROM information_schema.tables
 WHERE table_schema = 'public'
+  AND table_name IN (
+    'profiles', 'events', 'event_budgets', 'event_milestone_statuses',
+    'event_vendor_checklist_items', 'crisis_recovery_records', 'crisis_recovery_actions'
+  )
 ORDER BY table_name;
 "
 ```
 *Expected Result:*
-- `anon_select` and `anon_insert`: `f` (False) for all tables.
+- `anon_select`, `anon_insert`, and `public_select`: `f` (False) for all tables (Defense-in-depth verified).
 - `auth_select` and `auth_insert`: `t` (True) for all tables.
+- `auth_truncate`: `f` (False) for all tables (dangerous privileges revoked).
 
 ---
 

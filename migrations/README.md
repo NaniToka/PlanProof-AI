@@ -52,6 +52,11 @@ PlanProof AI migrations are designed for **Supabase PostgreSQL 15+** with GoTrue
   - The runtime connection role (e.g. `planproof_app` or `planproof_test_app`) **must NOT** have `BYPASSRLS` or superuser privileges.
   - The connection role must be granted membership in `authenticated` (`GRANT authenticated TO <app_role>;`) so it can establish transaction-scoped user claims via `set_config('role', 'authenticated', true)`.
   - In plain PostgreSQL testing environments, test harnesses initialize mock auth tables separately without placing unsafe stubs into application migrations.
+- **Defense-in-Depth ACL Hardening (`00010`)**:
+  - Migration `00010` revokes all table privileges from `anon` AND the `PUBLIC` pseudo-role, ensuring anonymous callers cannot access data even if RLS were accidentally toggled off.
+  - Revokes dangerous privileges (`TRUNCATE`, `REFERENCES`, `TRIGGER`) from `authenticated`, restricting runtime roles strictly to CRUD (`SELECT, INSERT, UPDATE, DELETE`).
+  - Hardens schema-specific default privileges (`ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public`) so future tables inherit least-privilege ACLs.
+  - Features a **fail-closed preflight guard** checking `pg_default_acl` for unsafe global defaults (`defaclnamespace = 0`); halts immediately if un-scoped global grants would compromise table isolation.
 
 ---
 
