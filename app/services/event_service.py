@@ -664,7 +664,13 @@ class EventService:
             await self.store.update(event_id, profile, user_id=user_id)
 
         matching_item = next(
-            (item for item in profile.vendor_checklist if item.id == item_id),
+            (
+                item
+                for item in profile.vendor_checklist
+                if item.id == item_id
+                or item.id.startswith(f"{item_id}_")
+                or item.id.startswith(f"{item_id}-")
+            ),
             None,
         )
         if matching_item is None:
@@ -702,7 +708,7 @@ class EventService:
         )
 
         updated_checklist = [
-            updated_item if i.id == item_id else i for i in profile.vendor_checklist
+            updated_item if i.id == matching_item.id else i for i in profile.vendor_checklist
         ]
 
         updated_profile = EventProfile(

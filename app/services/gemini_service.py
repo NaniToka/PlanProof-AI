@@ -132,10 +132,11 @@ class GeminiService:
         if not prompt or not prompt.strip():
             raise ValueError("Prompt cannot be empty or blank.")
 
-        if len(prompt) > self.settings.max_user_text_length:
+        max_prompt_length = getattr(self.settings, "gemini_max_prompt_length", 100000)
+        if len(prompt) > max_prompt_length:
             raise ValueError(
                 f"Prompt length ({len(prompt)}) exceeds maximum limit of "
-                f"{self.settings.max_user_text_length} characters."
+                f"{max_prompt_length} characters."
             )
 
         if not (isinstance(response_schema, type) and issubclass(response_schema, BaseModel)):

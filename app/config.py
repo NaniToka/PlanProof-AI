@@ -80,6 +80,12 @@ class Settings(BaseSettings):
         le=10,
         description="Maximum retry attempts for transient Gemini API errors (capped at 10)",
     )
+    gemini_max_prompt_length: int = Field(
+        default=100000,
+        ge=10,
+        le=1000000,
+        description="Maximum character length for Gemini LLM prompts (supports full crisis context)",
+    )
 
     # Dataset paths and storage
     data_dir: Path = Field(

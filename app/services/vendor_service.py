@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
+from uuid import uuid4
 
 from app.schemas import (
     EventType,
@@ -312,9 +313,10 @@ def generate_event_vendor_checklist(
             if event_date is not None
             else None
         )
+        unique_item_id = f"{item.id}_{uuid4().hex[:8].upper()}"
         items.append(
             EventVendorChecklistItem(
-                id=item.id,
+                id=unique_item_id,
                 category=item.category,
                 title=item.title,
                 description=item.description,

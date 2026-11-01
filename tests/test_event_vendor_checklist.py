@@ -278,7 +278,7 @@ def test_api_get_vendor_checklist_wedding_success(isolated_client: TestClient) -
 
     # Verify first item due_date calculation (Nov 20, 2027 - 150 days -> June 23, 2027)
     item_01 = data["items"][0]
-    assert item_01["id"] == "VCL-WED-01"
+    assert item_01["id"].startswith("VCL-WED-01")
     assert item_01["category"] == "venue_permissions"
     assert item_01["due_date"] == "2027-06-23"
     assert item_01["status"] == "pending"
@@ -371,7 +371,7 @@ def test_api_patch_vendor_checklist_item_success(isolated_client: TestClient) ->
     )
     assert patch_resp.status_code == 200
     item = patch_resp.json()
-    assert item["id"] == "VCL-WED-01"
+    assert item["id"].startswith("VCL-WED-01")
     assert item["status"] == "in_progress"
     assert item["notes"] == "Visited Royal Orchid Lawns. Advance requested is 25%."
     assert item["vendor_name"] == "Royal Orchid Lawns"
@@ -600,7 +600,7 @@ def test_vendor_checklist_persists_across_event_updates_and_budget_rebalancing(
 
     # Verify checklist state is intact
     c1 = isolated_client.get(f"/api/v1/events/{event_id}/vendors/checklist").json()
-    item_after_metadata = [i for i in c1["items"] if i["id"] == "VCL-WED-02"][0]
+    item_after_metadata = [i for i in c1["items"] if i["id"].startswith("VCL-WED-02")][0]
     assert item_after_metadata["status"] == "completed"
     assert item_after_metadata["vendor_name"] == "Annapurna Caterers"
     assert item_after_metadata["booking_status"] == "booked"
@@ -615,7 +615,7 @@ def test_vendor_checklist_persists_across_event_updates_and_budget_rebalancing(
 
     # Verify checklist state is still intact after budget rebalance
     c2 = isolated_client.get(f"/api/v1/events/{event_id}/vendors/checklist").json()
-    item_after_rebalance = [i for i in c2["items"] if i["id"] == "VCL-WED-02"][0]
+    item_after_rebalance = [i for i in c2["items"] if i["id"].startswith("VCL-WED-02")][0]
     assert item_after_rebalance["status"] == "completed"
     assert item_after_rebalance["vendor_name"] == "Annapurna Caterers"
     assert item_after_rebalance["booking_status"] == "booked"
@@ -643,7 +643,7 @@ def test_vendor_due_dates_recalculate_when_event_date_updated(
     )
 
     c_before = isolated_client.get(f"/api/v1/events/{event_id}/vendors/checklist").json()
-    cake_before = [i for i in c_before["items"] if i["id"] == "VCL-BDY-04"][0]
+    cake_before = [i for i in c_before["items"] if i["id"].startswith("VCL-BDY-04")][0]
     # May 15 - 12 days -> May 3, 2027
     assert cake_before["due_date"] == "2027-05-03"
 
@@ -654,7 +654,7 @@ def test_vendor_due_dates_recalculate_when_event_date_updated(
     )
 
     c_after = isolated_client.get(f"/api/v1/events/{event_id}/vendors/checklist").json()
-    cake_after = [i for i in c_after["items"] if i["id"] == "VCL-BDY-04"][0]
+    cake_after = [i for i in c_after["items"] if i["id"].startswith("VCL-BDY-04")][0]
     # May 25 - 12 days -> May 13, 2027
     assert cake_after["due_date"] == "2027-05-13"
     # User fields preserved

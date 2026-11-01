@@ -83,11 +83,34 @@ const AuthManager = {
     } catch (e) {}
   },
 
+  isPostgresMode() {
+    return this.config?.storage_backend === 'postgres' || state.authConfig?.storage_backend === 'postgres';
+  },
+
+  async getSessionToken() {
+    if (this.currentSession?.access_token) {
+      return this.currentSession.access_token;
+    }
+    if (this.supabaseClient) {
+      try {
+        const { data } = await this.supabaseClient.auth.getSession();
+        if (data?.session?.access_token) {
+          this.currentSession = data.session;
+          this.currentUser = data.session.user;
+          state.currentUser = this.currentUser;
+          return data.session.access_token;
+        }
+      } catch (e) {}
+    }
+    return null;
+  },
+
   async ensureGuestSession() {
-    if (this.isAuthenticated()) {
+    if (this.isAuthenticated() || this.isPostgresMode() || this.guestModeDisabled) {
       return null;
     }
-    if (this.guestModeDisabled || (this.config && (this.config.storage_backend === 'postgres' || this.config.allow_guest_mode === false))) {
+    if (this.config && (this.config.storage_backend === 'postgres' || this.config.allow_guest_mode === false)) {
+      this.guestModeDisabled = true;
       return null;
     }
     let token = this.getGuestSessionToken();
@@ -381,22 +404,14 @@ const API = {
     const headers = { ...defaultHeaders, ...options.headers };
 
     // Attach Bearer token if session exists
-    let token = null;
-    if (AuthManager.supabaseClient) {
-      try {
-        const { data } = await AuthManager.supabaseClient.auth.getSession();
-        token = data?.session?.access_token || null;
-      } catch (e) {
-        // Safe fallback
-      }
-    }
+    let token = await AuthManager.getSessionToken();
 
     if (token) {
       headers['Authorization'] = `Bearer ${token}`;
     } else {
       const publicPaths = ['/health', '/api/v1/auth/config', '/api/v1/data-status', '/api/v1/ai/status', '/api/v1/validate-event'];
       const isPublicPath = publicPaths.some(p => path === p || path.startsWith(p + '?'));
-      if (!isPublicPath) {
+      if (!isPublicPath && !AuthManager.isPostgresMode()) {
         const guestToken = await AuthManager.ensureGuestSession();
         if (guestToken) {
           headers['X-Guest-Session-ID'] = guestToken;

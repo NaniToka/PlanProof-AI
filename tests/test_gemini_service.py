@@ -132,16 +132,41 @@ async def test_generate_structured_content_rejects_empty_prompt() -> None:
 
 @pytest.mark.asyncio
 async def test_generate_structured_content_rejects_excessive_prompt() -> None:
-    """Verify that prompt exceeding max_user_text_length raises ValueError."""
-    settings = Settings(gemini_api_key="mock_key", max_user_text_length=50)
+    """Verify that prompt exceeding gemini_max_prompt_length raises ValueError."""
+    settings = Settings(gemini_api_key="mock_key", gemini_max_prompt_length=50)
     service = GeminiService(settings=settings, client=MagicMock())
 
     long_prompt = "A" * 51
-    with pytest.raises(ValueError, match="exceeds maximum limit"):
+    with pytest.raises(ValueError, match="exceeds maximum limit of 50 characters"):
         await service.generate_structured_content(
             prompt=long_prompt,
             response_schema=DummyEventPlan,
         )
+
+
+@pytest.mark.asyncio
+async def test_generate_structured_content_accepts_full_crisis_prompt() -> None:
+    """Regression test: verify that a full production crisis recovery prompt (>9000 chars)
+
+    is accepted without ValueError: Prompt length exceeds maximum limit.
+    """
+    settings = Settings(gemini_api_key="mock_key", gemini_max_prompt_length=100000)
+    mock_client = MagicMock()
+    mock_response = MagicMock()
+    mock_response.text = '{"title": "Emergency Monsoon Plan", "guest_count": 250}'
+    mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
+
+    service = GeminiService(settings=settings, client=mock_client)
+
+    full_production_crisis_prompt = "Event Context:\n" + ("X" * 9200) + "\nEnrich crisis response plan."
+    assert len(full_production_crisis_prompt) > 9078
+
+    result = await service.generate_structured_content(
+        prompt=full_production_crisis_prompt,
+        response_schema=DummyEventPlan,
+    )
+    assert result.title == "Emergency Monsoon Plan"
+    assert result.guest_count == 250
 
 
 @pytest.mark.asyncio

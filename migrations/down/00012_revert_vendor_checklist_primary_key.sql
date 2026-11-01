@@ -7,3 +7,4 @@ ALTER TABLE public.event_vendor_checklist_items
 
 ALTER TABLE public.event_vendor_checklist_items
     ADD CONSTRAINT event_vendor_checklist_items_pkey PRIMARY KEY (id);
+
