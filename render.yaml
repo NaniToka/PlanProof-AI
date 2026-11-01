@@ -4,17 +4,30 @@ services:
     runtime: python
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.9
       - key: APP_ENV
         value: production
+      - key: STORAGE_BACKEND
+        value: postgres
       - key: CRISIS_DATASET_PATH
         value: data/crisis_scenarios.csv
       - key: BUDGET_SPLITS_PATH
         value: data/budget_splits.json
       - key: VENDOR_CHECKLISTS_PATH
         value: data/vendor_checklists.json
+      - key: SUPABASE_JWT_AUDIENCE
+        value: authenticated
+      - key: SUPABASE_JWT_ALGORITHMS
+        value: ES256
+      - key: DATABASE_URL
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
       - key: GEMINI_API_KEY
         sync: false
       - key: GUEST_SESSION_SECRET
