@@ -26,10 +26,12 @@ Migrations are numbered sequentially and must be applied in the following depend
 | **09** | [`00009_grant_authenticated_role_permissions.sql`](./00009_grant_authenticated_role_permissions.sql) | Grant authenticated role schema and table permissions | `public` schema |
 | **10** | [`00010_harden_least_privilege_acls.sql`](./00010_harden_least_privilege_acls.sql) | Harden table and default ACLs (least privilege) | All 7 tables & `public` schema |
 | **11** | [`00011_revoke_authenticated_maintain.sql`](./00011_revoke_authenticated_maintain.sql) | Revoke MAINTAIN from authenticated role | All 7 tables & `public` schema |
+| **12** | [`00012_fix_vendor_checklist_primary_key.sql`](./00012_fix_vendor_checklist_primary_key.sql) | Scope vendor checklist PK to `(event_id, id)` | `public.event_vendor_checklist_items` |
 
 ### Rollback / Down Migrations (Disposable Test Environments Only)
-Symmetrical reversal scripts are located in [`migrations/down/`](./down/) and **must strictly be executed in reverse order (`00011` down to `00001`)**:
-1. [`00011_rollback_revoke_maintain.sql`](./down/00011_rollback_revoke_maintain.sql) *(Guarded: requires manual security authorization)*
+Symmetrical reversal scripts are located in [`migrations/down/`](./down/) and **must strictly be executed in reverse order (`00012` down to `00001`)**:
+1. [`00012_revert_vendor_checklist_primary_key.sql`](./down/00012_revert_vendor_checklist_primary_key.sql)
+2. [`00011_rollback_revoke_maintain.sql`](./down/00011_rollback_revoke_maintain.sql) *(Guarded: requires manual security authorization)*
 2. [`00010_rollback_acl_hardening.sql`](./down/00010_rollback_acl_hardening.sql) *(Guarded: requires manual security authorization)*
 3. [`00009_revoke_authenticated_role_permissions.sql`](./down/00009_revoke_authenticated_role_permissions.sql)
 4. [`00008_disable_row_level_security.sql`](./down/00008_disable_row_level_security.sql)

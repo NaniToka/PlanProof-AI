@@ -50,6 +50,8 @@ const AuthManager = {
   currentSession: null,
   guestSessionToken: null,
   refreshPromise: null,
+  guestSessionPromise: null,
+  guestModeDisabled: false,
   authMode: 'login',
   isInitializing: false,
   isInitialized: false,
@@ -85,8 +87,17 @@ const AuthManager = {
     if (this.isAuthenticated()) {
       return null;
     }
+    if (this.guestModeDisabled || (this.config && (this.config.storage_backend === 'postgres' || this.config.allow_guest_mode === false))) {
+      return null;
+    }
     let token = this.getGuestSessionToken();
-    if (!token) {
+    if (token) {
+      return token;
+    }
+    if (this.guestSessionPromise) {
+      return this.guestSessionPromise;
+    }
+    this.guestSessionPromise = (async () => {
       try {
         const res = await fetch(`${API.baseUrl}/api/v1/auth/guest-session`, {
           method: 'POST',
@@ -97,13 +108,20 @@ const AuthManager = {
           if (data?.guest_session_token) {
             token = data.guest_session_token;
             this.setGuestSessionToken(token);
+            return token;
           }
+        } else if (res.status === 401 || res.status === 403) {
+          this.guestModeDisabled = true;
+          return null;
         }
       } catch (e) {
         // Fallback: server auto-issues on unauthenticated requests
+      } finally {
+        this.guestSessionPromise = null;
       }
-    }
-    return token;
+      return null;
+    })();
+    return this.guestSessionPromise;
   },
 
   async refreshSession() {
@@ -376,9 +394,13 @@ const API = {
     if (token) {
       headers['Authorization'] = `Bearer ${token}`;
     } else {
-      const guestToken = await AuthManager.ensureGuestSession();
-      if (guestToken) {
-        headers['X-Guest-Session-ID'] = guestToken;
+      const publicPaths = ['/health', '/api/v1/auth/config', '/api/v1/data-status', '/api/v1/ai/status', '/api/v1/validate-event'];
+      const isPublicPath = publicPaths.some(p => path === p || path.startsWith(p + '?'));
+      if (!isPublicPath) {
+        const guestToken = await AuthManager.ensureGuestSession();
+        if (guestToken) {
+          headers['X-Guest-Session-ID'] = guestToken;
+        }
       }
     }
 
@@ -459,7 +481,10 @@ const API = {
     });
   },
 
-  getEvent(eventId) {
+  getEvent(eventId, forceRefresh = false) {
+    if (!forceRefresh && state.currentEvent && state.currentEvent.event_id === eventId) {
+      return Promise.resolve(state.currentEvent);
+    }
     return this.request(`/api/v1/events/${encodeURIComponent(eventId)}`);
   },
 
@@ -1894,6 +1919,7 @@ async function handleCrisisFormSubmit(evt) {
   const severity = state.crisisSeverity || 2;
 
   const btn = document.getElementById('btn-submit-crisis-eval');
+  if (btn && btn.disabled) return;
   const originalText = btn ? btn.innerHTML : '';
   if (btn) {
     btn.disabled = true;
@@ -3431,6 +3457,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('form-create-event')?.addEventListener('submit', async (e) => {
     e.preventDefault();
     const btn = document.getElementById('btn-submit-create-event');
+    if (!btn || btn.disabled) return;
     btn.textContent = 'Creating...';
     btn.disabled = true;
 
@@ -3449,14 +3476,37 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     try {
       const created = await API.createEvent(payload);
-      showToast(`Event profile '${created.event_id}' created successfully!`, 'success');
       closeCreateEventModal();
       document.getElementById('form-create-event').reset();
 
-      await loadEventsList();
-      await selectEvent(created.event_id);
+      // Immediately populate local state and UI without redundant blocking network round-trips
+      state.events = [created, ...(state.events || []).filter(ev => ev.event_id !== created.event_id)];
+      state.currentEventId = created.event_id;
+      state.currentEvent = created;
+      state.selectedRecoveryId = null;
+      state.selectedRecovery = null;
+      try {
+        sessionStorage.setItem('planproof_active_event_id', created.event_id);
+      } catch (err) {}
+
+      const select = document.getElementById('event-select-dropdown');
+      if (select) {
+        if (!Array.from(select.options).some(o => o.value === created.event_id)) {
+          const opt = document.createElement('option');
+          opt.value = created.event_id;
+          opt.textContent = `${created.event_name || created.event_type} (${created.event_id})`;
+          select.prepend(opt);
+        }
+        select.value = created.event_id;
+      }
+      updateActiveEventBadge(created);
+      renderEventOverview(created);
       window.location.hash = 'overview';
       switchView('overview');
+      showToast(`Event profile '${created.event_id}' created successfully!`, 'success');
+
+      // Non-blocking background sync of full list
+      loadEventsList().catch(() => {});
     } catch (err) {
       showToast(err.message, 'error');
     } finally {
@@ -3538,6 +3588,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('form-auth')?.addEventListener('submit', async (e) => {
     e.preventDefault();
     const submitBtn = document.getElementById('btn-auth-submit');
+    if (!submitBtn || submitBtn.disabled) return;
     const emailInput = document.getElementById('auth-email');
     const passwordInput = document.getElementById('auth-password');
 
@@ -3581,8 +3632,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // 9. Bootstrap Initial State
   await AuthManager.init();
-  await loadSystemStatus();
-  await loadEventsList();
+  await Promise.all([loadSystemStatus(), loadEventsList()]);
 
   const initialHash = window.location.hash.replace('#', '') || 'overview';
   switchView(initialHash);

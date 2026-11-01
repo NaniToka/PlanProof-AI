@@ -270,23 +270,42 @@ class PostgresEventRepository(BaseEventRepository):
                         )
 
                     # 3. Insert milestone status overrides
-                    for mid, st in profile.milestone_statuses.items():
-                        await conn.execute(
+                    if profile.milestone_statuses:
+                        ms_params = [
+                            (profile.event_id, mid, st.value, profile.created_at, profile.updated_at)
+                            for mid, st in profile.milestone_statuses.items()
+                        ]
+                        await conn.executemany(
                             """
                             INSERT INTO public.event_milestone_statuses (
                                 event_id, milestone_id, status, created_at, updated_at
                             ) VALUES ($1, $2, $3, $4, $5);
                             """,
-                            profile.event_id,
-                            mid,
-                            st.value,
-                            profile.created_at,
-                            profile.updated_at,
+                            ms_params,
                         )
 
                     # 4. Insert vendor checklist items
-                    for item in profile.vendor_checklist:
-                        await conn.execute(
+                    if profile.vendor_checklist:
+                        v_params = [
+                            (
+                                item.id,
+                                profile.event_id,
+                                item.category.value,
+                                item.title,
+                                item.description,
+                                item.status.value,
+                                item.due_date,
+                                item.days_before_event,
+                                item.priority.value,
+                                item.notes,
+                                item.vendor_name,
+                                item.booking_status.value,
+                                item.created_at,
+                                item.updated_at,
+                            )
+                            for item in profile.vendor_checklist
+                        ]
+                        await conn.executemany(
                             """
                             INSERT INTO public.event_vendor_checklist_items (
                                 id, event_id, category, title, description, status,
@@ -294,26 +313,29 @@ class PostgresEventRepository(BaseEventRepository):
                                 vendor_name, booking_status, created_at, updated_at
                             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14);
                             """,
-                            item.id,
-                            profile.event_id,
-                            item.category.value,
-                            item.title,
-                            item.description,
-                            item.status.value,
-                            item.due_date,
-                            item.days_before_event,
-                            item.priority.value,
-                            item.notes,
-                            item.vendor_name,
-                            item.booking_status.value,
-                            item.created_at,
-                            item.updated_at,
+                            v_params,
                         )
 
                     # 5. Insert recovery records and actions
-                    for rec in profile.recovery_records:
-                        plan_json = json.dumps(rec.recovery_plan.model_dump(mode="json"))
-                        await conn.execute(
+                    if profile.recovery_records:
+                        r_params = [
+                            (
+                                rec.recovery_id,
+                                profile.event_id,
+                                rec.crisis_type,
+                                rec.severity,
+                                rec.description,
+                                json.dumps(rec.recovery_plan.model_dump(mode="json")),
+                                rec.source,
+                                rec.status.value,
+                                rec.total_actions,
+                                rec.completed_actions,
+                                rec.created_at,
+                                rec.updated_at,
+                            )
+                            for rec in profile.recovery_records
+                        ]
+                        await conn.executemany(
                             """
                             INSERT INTO public.crisis_recovery_records (
                                 recovery_id, event_id, crisis_type, severity, description,
@@ -321,27 +343,11 @@ class PostgresEventRepository(BaseEventRepository):
                                 created_at, updated_at
                             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12);
                             """,
-                            rec.recovery_id,
-                            profile.event_id,
-                            rec.crisis_type,
-                            rec.severity,
-                            rec.description,
-                            plan_json,
-                            rec.source,
-                            rec.status.value,
-                            rec.total_actions,
-                            rec.completed_actions,
-                            rec.created_at,
-                            rec.updated_at,
+                            r_params,
                         )
-                        for act in rec.actions:
-                            await conn.execute(
-                                """
-                                INSERT INTO public.crisis_recovery_actions (
-                                    action_id, recovery_id, event_id, title, description,
-                                    priority, status, notes, created_at, updated_at
-                                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10);
-                                """,
+
+                        all_actions = [
+                            (
                                 act.action_id,
                                 rec.recovery_id,
                                 profile.event_id,
@@ -352,6 +358,19 @@ class PostgresEventRepository(BaseEventRepository):
                                 act.notes,
                                 act.created_at,
                                 act.updated_at,
+                            )
+                            for rec in profile.recovery_records
+                            for act in rec.actions
+                        ]
+                        if all_actions:
+                            await conn.executemany(
+                                """
+                                INSERT INTO public.crisis_recovery_actions (
+                                    action_id, recovery_id, event_id, title, description,
+                                    priority, status, notes, created_at, updated_at
+                                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10);
+                                """,
+                                all_actions,
                             )
 
                 if profile.user_id != owner_id:
@@ -464,56 +483,56 @@ class PostgresEventRepository(BaseEventRepository):
             event_id,
         )
         recovery_records: list[CrisisRecoveryRecord] = []
-        for rr in rec_rows:
-            rec_id = rr["recovery_id"]
+        if rec_rows:
             act_rows = await conn.fetch(
                 """
-                SELECT action_id, title, description, priority, status, notes,
+                SELECT action_id, recovery_id, title, description, priority, status, notes,
                        created_at, updated_at
                 FROM public.crisis_recovery_actions
-                WHERE recovery_id = $1
+                WHERE event_id = $1
                 ORDER BY created_at ASC;
                 """,
-                rec_id,
+                event_id,
             )
-            actions = [
-                TrackedRecoveryAction(
-                    action_id=ar["action_id"],
-                    recovery_id=rec_id,
-                    title=ar["title"],
-                    description=ar["description"],
-                    priority=ar["priority"],
-                    status=RecoveryActionStatus(ar["status"]),
-                    notes=ar["notes"],
-                    created_at=ar["created_at"],
-                    updated_at=ar["updated_at"],
+            actions_by_rec: dict[str, list[TrackedRecoveryAction]] = {}
+            for ar in act_rows:
+                actions_by_rec.setdefault(ar["recovery_id"], []).append(
+                    TrackedRecoveryAction(
+                        action_id=ar["action_id"],
+                        recovery_id=ar["recovery_id"],
+                        title=ar["title"],
+                        description=ar["description"],
+                        priority=ar["priority"],
+                        status=RecoveryActionStatus(ar["status"]),
+                        notes=ar["notes"],
+                        created_at=ar["created_at"],
+                        updated_at=ar["updated_at"],
+                    )
                 )
-                for ar in act_rows
-            ]
-            plan_data = rr["recovery_plan"]
-            if isinstance(plan_data, str):
-                plan_dict = json.loads(plan_data)
-            else:
-                plan_dict = plan_data
-            plan = EventCrisisRecoveryResponse.model_validate(plan_dict)
 
-            recovery_records.append(
-                CrisisRecoveryRecord(
-                    recovery_id=rec_id,
-                    event_id=event_id,
-                    crisis_type=rr["crisis_type"],
-                    severity=rr["severity"],
-                    description=rr["description"],
-                    recovery_plan=plan,
-                    actions=actions,
-                    source=rr["source"],
-                    status=RecoveryStatus(rr["status"]),
-                    total_actions=rr["total_actions"],
-                    completed_actions=rr["completed_actions"],
-                    created_at=rr["created_at"],
-                    updated_at=rr["updated_at"],
+            for rr in rec_rows:
+                rec_id = rr["recovery_id"]
+                plan_data = rr["recovery_plan"]
+                plan_dict = json.loads(plan_data) if isinstance(plan_data, str) else plan_data
+                plan = EventCrisisRecoveryResponse.model_validate(plan_dict)
+
+                recovery_records.append(
+                    CrisisRecoveryRecord(
+                        recovery_id=rec_id,
+                        event_id=event_id,
+                        crisis_type=rr["crisis_type"],
+                        severity=rr["severity"],
+                        description=rr["description"],
+                        recovery_plan=plan,
+                        actions=actions_by_rec.get(rec_id, []),
+                        source=rr["source"],
+                        status=RecoveryStatus(rr["status"]),
+                        total_actions=rr["total_actions"],
+                        completed_actions=rr["completed_actions"],
+                        created_at=rr["created_at"],
+                        updated_at=rr["updated_at"],
+                    )
                 )
-            )
 
         return EventProfile(
             event_id=row["event_id"],
@@ -636,8 +655,12 @@ class PostgresEventRepository(BaseEventRepository):
                         )
 
                     # 3. Synchronize milestone statuses
-                    for mid, st in profile.milestone_statuses.items():
-                        await conn.execute(
+                    if profile.milestone_statuses:
+                        ms_params = [
+                            (event_id, mid, st.value, profile.updated_at, profile.updated_at)
+                            for mid, st in profile.milestone_statuses.items()
+                        ]
+                        await conn.executemany(
                             """
                             INSERT INTO public.event_milestone_statuses (
                                 event_id, milestone_id, status, created_at, updated_at
@@ -646,23 +669,38 @@ class PostgresEventRepository(BaseEventRepository):
                                 status = EXCLUDED.status,
                                 updated_at = EXCLUDED.updated_at;
                             """,
-                            event_id,
-                            mid,
-                            st.value,
-                            profile.updated_at,
-                            profile.updated_at,
+                            ms_params,
                         )
 
                     # 4. Synchronize vendor checklist items
-                    for item in profile.vendor_checklist:
-                        await conn.execute(
+                    if profile.vendor_checklist:
+                        v_params = [
+                            (
+                                item.id,
+                                event_id,
+                                item.category.value,
+                                item.title,
+                                item.description,
+                                item.status.value,
+                                item.due_date,
+                                item.days_before_event,
+                                item.priority.value,
+                                item.notes,
+                                item.vendor_name,
+                                item.booking_status.value,
+                                item.created_at,
+                                item.updated_at,
+                            )
+                            for item in profile.vendor_checklist
+                        ]
+                        await conn.executemany(
                             """
                             INSERT INTO public.event_vendor_checklist_items (
                                 id, event_id, category, title, description, status,
                                 due_date, days_before_event, priority, notes,
                                 vendor_name, booking_status, created_at, updated_at
                             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-                            ON CONFLICT (id) DO UPDATE SET
+                            ON CONFLICT (event_id, id) DO UPDATE SET
                                 category = EXCLUDED.category,
                                 title = EXCLUDED.title,
                                 description = EXCLUDED.description,
@@ -675,26 +713,29 @@ class PostgresEventRepository(BaseEventRepository):
                                 booking_status = EXCLUDED.booking_status,
                                 updated_at = EXCLUDED.updated_at;
                             """,
-                            item.id,
-                            event_id,
-                            item.category.value,
-                            item.title,
-                            item.description,
-                            item.status.value,
-                            item.due_date,
-                            item.days_before_event,
-                            item.priority.value,
-                            item.notes,
-                            item.vendor_name,
-                            item.booking_status.value,
-                            item.created_at,
-                            item.updated_at,
+                            v_params,
                         )
 
                     # 5. Synchronize recovery records and actions
-                    for rec in profile.recovery_records:
-                        plan_json = json.dumps(rec.recovery_plan.model_dump(mode="json"))
-                        await conn.execute(
+                    if profile.recovery_records:
+                        r_params = [
+                            (
+                                rec.recovery_id,
+                                event_id,
+                                rec.crisis_type,
+                                rec.severity,
+                                rec.description,
+                                json.dumps(rec.recovery_plan.model_dump(mode="json")),
+                                rec.source,
+                                rec.status.value,
+                                rec.total_actions,
+                                rec.completed_actions,
+                                rec.created_at,
+                                rec.updated_at,
+                            )
+                            for rec in profile.recovery_records
+                        ]
+                        await conn.executemany(
                             """
                             INSERT INTO public.crisis_recovery_records (
                                 recovery_id, event_id, crisis_type, severity, description,
@@ -707,31 +748,11 @@ class PostgresEventRepository(BaseEventRepository):
                                 completed_actions = EXCLUDED.completed_actions,
                                 updated_at = EXCLUDED.updated_at;
                             """,
-                            rec.recovery_id,
-                            event_id,
-                            rec.crisis_type,
-                            rec.severity,
-                            rec.description,
-                            plan_json,
-                            rec.source,
-                            rec.status.value,
-                            rec.total_actions,
-                            rec.completed_actions,
-                            rec.created_at,
-                            rec.updated_at,
+                            r_params,
                         )
-                        for act in rec.actions:
-                            await conn.execute(
-                                """
-                                INSERT INTO public.crisis_recovery_actions (
-                                    action_id, recovery_id, event_id, title, description,
-                                    priority, status, notes, created_at, updated_at
-                                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-                                ON CONFLICT (action_id) DO UPDATE SET
-                                    status = EXCLUDED.status,
-                                    notes = EXCLUDED.notes,
-                                    updated_at = EXCLUDED.updated_at;
-                                """,
+
+                        all_actions = [
+                            (
                                 act.action_id,
                                 rec.recovery_id,
                                 event_id,
@@ -742,6 +763,23 @@ class PostgresEventRepository(BaseEventRepository):
                                 act.notes,
                                 act.created_at,
                                 act.updated_at,
+                            )
+                            for rec in profile.recovery_records
+                            for act in rec.actions
+                        ]
+                        if all_actions:
+                            await conn.executemany(
+                                """
+                                INSERT INTO public.crisis_recovery_actions (
+                                    action_id, recovery_id, event_id, title, description,
+                                    priority, status, notes, created_at, updated_at
+                                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                                ON CONFLICT (action_id) DO UPDATE SET
+                                    status = EXCLUDED.status,
+                                    notes = EXCLUDED.notes,
+                                    updated_at = EXCLUDED.updated_at;
+                                """,
+                                all_actions,
                             )
                 if profile.user_id != owner_id:
                     profile = profile.model_copy(update={"user_id": owner_id})
@@ -770,7 +808,9 @@ class PostgresEventRepository(BaseEventRepository):
                     )
                     rows = await conn.fetch(
                         """
-                        SELECT event_id
+                        SELECT event_id, user_id, event_type, event_name, city, city_tier,
+                               event_date, guest_count, total_budget_inr, language,
+                               theme_notes, is_in_progress, created_at, updated_at
                         FROM public.events
                         WHERE user_id = $1
                         ORDER BY updated_at DESC
@@ -780,11 +820,171 @@ class PostgresEventRepository(BaseEventRepository):
                         skip,
                         limit,
                     )
+                    if not rows:
+                        return [], total
+
+                    event_ids = [r["event_id"] for r in rows]
+
+                    # 1. Fetch budgets for all listed events
+                    b_rows = await conn.fetch(
+                        """
+                        SELECT event_id, venue, catering, decor, photo_video, attire_beauty,
+                               entertainment, logistics, buffer, total_budget_inr
+                        FROM public.event_budgets
+                        WHERE event_id = ANY($1);
+                        """,
+                        event_ids,
+                    )
+                    budgets_by_event = {
+                        br["event_id"]: EventBudgetBreakdown(
+                            venue=br["venue"],
+                            catering=br["catering"],
+                            decor=br["decor"],
+                            photo_video=br["photo_video"],
+                            attire_beauty=br["attire_beauty"],
+                            entertainment=br["entertainment"],
+                            logistics=br["logistics"],
+                            buffer=br["buffer"],
+                            total_budget_inr=br["total_budget_inr"],
+                        )
+                        for br in b_rows
+                    }
+
+                    # 2. Fetch milestone statuses for all listed events
+                    ms_rows = await conn.fetch(
+                        """
+                        SELECT event_id, milestone_id, status
+                        FROM public.event_milestone_statuses
+                        WHERE event_id = ANY($1);
+                        """,
+                        event_ids,
+                    )
+                    ms_by_event: dict[str, dict[str, MilestoneStatus]] = {}
+                    for msr in ms_rows:
+                        ms_by_event.setdefault(msr["event_id"], {})[msr["milestone_id"]] = MilestoneStatus(msr["status"])
+
+                    # 3. Fetch vendor checklist items for all listed events
+                    v_rows = await conn.fetch(
+                        """
+                        SELECT id, event_id, category, title, description, status,
+                               due_date, days_before_event, priority, notes,
+                               vendor_name, booking_status, created_at, updated_at
+                        FROM public.event_vendor_checklist_items
+                        WHERE event_id = ANY($1)
+                        ORDER BY due_date ASC NULLS LAST, created_at ASC;
+                        """,
+                        event_ids,
+                    )
+                    vendors_by_event: dict[str, list[EventVendorChecklistItem]] = {}
+                    for vr in v_rows:
+                        vendors_by_event.setdefault(vr["event_id"], []).append(
+                            EventVendorChecklistItem(
+                                id=vr["id"],
+                                category=VendorChecklistCategory(vr["category"]),
+                                title=vr["title"],
+                                description=vr["description"],
+                                status=VendorChecklistStatus(vr["status"]),
+                                due_date=vr["due_date"],
+                                days_before_event=vr["days_before_event"],
+                                priority=VendorChecklistPriority(vr["priority"]),
+                                notes=vr["notes"],
+                                vendor_name=vr["vendor_name"],
+                                booking_status=VendorBookingStatus(vr["booking_status"]),
+                                created_at=vr["created_at"],
+                                updated_at=vr["updated_at"],
+                            )
+                        )
+
+                    # 4. Fetch crisis recovery records for all listed events
+                    rec_rows = await conn.fetch(
+                        """
+                        SELECT recovery_id, event_id, crisis_type, severity, description,
+                               recovery_plan, source, status, total_actions, completed_actions,
+                               created_at, updated_at
+                        FROM public.crisis_recovery_records
+                        WHERE event_id = ANY($1)
+                        ORDER BY created_at DESC;
+                        """,
+                        event_ids,
+                    )
+
+                    # 5. Fetch recovery actions for all listed events
+                    actions_by_rec: dict[str, list[TrackedRecoveryAction]] = {}
+                    if rec_rows:
+                        act_rows = await conn.fetch(
+                            """
+                            SELECT action_id, recovery_id, title, description, priority, status, notes,
+                                   created_at, updated_at
+                            FROM public.crisis_recovery_actions
+                            WHERE event_id = ANY($1)
+                            ORDER BY created_at ASC;
+                            """,
+                            event_ids,
+                        )
+                        for ar in act_rows:
+                            actions_by_rec.setdefault(ar["recovery_id"], []).append(
+                                TrackedRecoveryAction(
+                                    action_id=ar["action_id"],
+                                    recovery_id=ar["recovery_id"],
+                                    title=ar["title"],
+                                    description=ar["description"],
+                                    priority=ar["priority"],
+                                    status=RecoveryActionStatus(ar["status"]),
+                                    notes=ar["notes"],
+                                    created_at=ar["created_at"],
+                                    updated_at=ar["updated_at"],
+                                )
+                            )
+
+                    records_by_event: dict[str, list[CrisisRecoveryRecord]] = {}
+                    for rr in rec_rows:
+                        rec_id = rr["recovery_id"]
+                        plan_data = rr["recovery_plan"]
+                        plan_dict = json.loads(plan_data) if isinstance(plan_data, str) else plan_data
+                        plan = EventCrisisRecoveryResponse.model_validate(plan_dict)
+                        records_by_event.setdefault(rr["event_id"], []).append(
+                            CrisisRecoveryRecord(
+                                recovery_id=rec_id,
+                                event_id=rr["event_id"],
+                                crisis_type=rr["crisis_type"],
+                                severity=rr["severity"],
+                                description=rr["description"],
+                                recovery_plan=plan,
+                                actions=actions_by_rec.get(rec_id, []),
+                                source=rr["source"],
+                                status=RecoveryStatus(rr["status"]),
+                                total_actions=rr["total_actions"],
+                                completed_actions=rr["completed_actions"],
+                                created_at=rr["created_at"],
+                                updated_at=rr["updated_at"],
+                            )
+                        )
+
                     profiles: list[EventProfile] = []
                     for r in rows:
-                        p = await self._fetch_profile_in_conn(conn, r["event_id"], effective_user_id)
-                        if p:
-                            profiles.append(p)
+                        ev_id = r["event_id"]
+                        profiles.append(
+                            EventProfile(
+                                event_id=ev_id,
+                                user_id=r["user_id"],
+                                event_type=EventType(r["event_type"]),
+                                event_name=r["event_name"],
+                                city=r["city"],
+                                city_tier=CityTier(r["city_tier"]),
+                                event_date=r["event_date"],
+                                guest_count=r["guest_count"],
+                                total_budget_inr=r["total_budget_inr"],
+                                language=LanguageCode(r["language"]),
+                                theme_notes=r["theme_notes"],
+                                is_in_progress=r["is_in_progress"],
+                                budget=budgets_by_event.get(ev_id),
+                                milestone_statuses=ms_by_event.get(ev_id, {}),
+                                vendor_checklist=vendors_by_event.get(ev_id, []),
+                                recovery_records=records_by_event.get(ev_id, []),
+                                created_at=r["created_at"],
+                                updated_at=r["updated_at"],
+                            )
+                        )
                     return profiles, total
             except Exception as exc:
                 if isinstance(exc, (RepositoryError,)):

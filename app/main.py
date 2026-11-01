@@ -3,6 +3,7 @@
 import ipaddress
 import logging
 import re
+import time
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import date
@@ -250,6 +251,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 return True
         return False
 
+
+    @app.middleware("http")
+    async def request_timing_middleware(request: Request, call_next: Any) -> Any:
+        start_time = time.perf_counter()
+        response = await call_next(request)
+        duration_ms = (time.perf_counter() - start_time) * 1000
+        response.headers["Server-Timing"] = f"total;dur={duration_ms:.1f}"
+        if duration_ms > 200:
+            logger.info(
+                "Slow request: %s %s took %.1fms (status=%d)",
+                request.method,
+                request.url.path,
+                duration_ms,
+                response.status_code,
+            )
+        return response
 
     @app.middleware("http")
     async def guest_session_cookie_middleware(request: Request, call_next: Any) -> Any:
